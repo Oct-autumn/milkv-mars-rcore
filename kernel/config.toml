@@ -1,0 +1,11 @@
+# 内核构建配置（单一事实来源）
+#
+# 本文件由 build.rs 在编译期读取，并分发到：
+#   - 链接脚本：通过 -defsym=BASE_ADDRESS=... 注入（链接器"宏"）
+#   - Rust 源码：生成 OUT_DIR/generated.rs 中的常量，经 config.rs 引入
+#
+# 所有数值配置（十六进制或十进制均可）在此统一管理。
+
+# 内核加载基址（默认值；若未配置则按板卡 feature 推断：
+#   board_qemu → 0x40200000，board_k210 → 0x80200000）
+base_address = 0x40200000

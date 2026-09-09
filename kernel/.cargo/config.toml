@@ -1,0 +1,9 @@
+[build]
+target = "riscv64gc-unknown-none-elf"
+target-dir = "target"
+
+[target.riscv64gc-unknown-none-elf]
+rustflags = [
+    "-Clink-arg=-Tsrc/linker.lds", # 指定链接脚本
+    "-Cforce-frame-pointers=yes",  # 保留帧指针，便于调试
+]

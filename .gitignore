@@ -1,0 +1,8 @@
+# Ignore the OMO record file
+.omo/
+
+# Ignore the output directory / build directory and compiled files
+target/
+build/
+output/
+__pycache__/
