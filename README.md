@@ -33,3 +33,7 @@ make
 # 上板测试
 python3 tools/scripts/full_flash_test.py --boot_mode=2
 ```
+
+## License
+
+本项目遵循GPLv3开源协议，详见 [LICENSE](LICENSE) 文件。
