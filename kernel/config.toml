@@ -6,6 +6,9 @@
 #
 # 所有数值配置（十六进制或十进制均可）在此统一管理。
 
-# 内核加载基址（默认值；若未配置则按板卡 feature 推断：
-#   board_qemu → 0x40200000，board_k210 → 0x80200000）
+# 内核加载基址
 base_address = 0x40200000
+# mtime 寄存器递增频率（单位：Hz），用于计算时间
+# 根据TRM，mtime寄存器时钟来自 osc时钟/6 ，而 osc时钟为24MHz，
+# 因此 mtime 寄存器频率为 4MHz
+mtime_frequency = 4000000

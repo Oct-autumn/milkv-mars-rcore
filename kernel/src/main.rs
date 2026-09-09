@@ -5,6 +5,7 @@ mod config;
 mod console;
 mod lang_items;
 mod sbi_call;
+mod time;
 
 use core::arch::global_asm;
 
@@ -24,6 +25,12 @@ fn main(hartid: usize, dtb_addr: usize) -> ! {
     print!("============ Mars-rCore ============\n");
     print!("BASE_ADDRESS = {:#x}\n", config::BASE_ADDRESS);
     print!("Boot HartID = {}, DTB Address = {:#x}\n", hartid, dtb_addr);
+
+    for i in 0..10 {
+        print!("\r> Reboot in {} seconds ...", 10 - i);
+        time::busy_wait_sleep(1000);
+    }
+    print!("\r> Rebooting now ...\n");
 
     sbi_call::shutdown(ResetType::ColdReboot, ResetReason::NoReason);
 }

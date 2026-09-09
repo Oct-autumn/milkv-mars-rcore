@@ -76,7 +76,8 @@ fn main() {
     };
     let get = |key: &str| configs.iter().find(|(k, _)| k == key).map(|(_, v)| *v);
 
-    let base_address = get("base_address").unwrap_or_else(|| 0x4020_0000);
+    let base_address = get("base_address").unwrap_or(0x4020_0000);
+    let mtime_frequency = get("mtime_frequency").unwrap_or(4_000_000);
 
     // ---- 分发 1: 注入链接脚本宏（rust-lld 的 -defsym 机制）----
     println!("cargo:rustc-link-arg=-defsym=BASE_ADDRESS=0x{base_address:x}");
@@ -88,7 +89,8 @@ fn main() {
         &generated,
         format!(
             "// 由 build.rs 从 config.toml 自动生成，请勿手动修改\n\
-         pub const BASE_ADDRESS: usize = 0x{base_address:x};\n"
+         pub const BASE_ADDRESS: usize = 0x{base_address:x};\n
+         pub const MTIME_FREQUENCY: usize = {mtime_frequency};\n",
         ),
     )
     .expect("写入 generated.rs 失败");

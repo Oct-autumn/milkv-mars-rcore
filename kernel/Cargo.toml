@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 sbi = { version = "0.3.0" }
+riscv = { version = "0.16.1", features = ["s-mode"] }
 
 [features]
 default = []
