@@ -4,6 +4,7 @@
 mod config;
 mod console;
 mod lang_items;
+mod log;
 mod sbi_call;
 mod time;
 
@@ -21,10 +22,15 @@ fn main(hartid: usize, dtb_addr: usize) -> ! {
 
     let _ = config::BASE_ADDRESS;
 
-    print!("\n");
-    print!("============ Mars-rCore ============\n");
-    print!("BASE_ADDRESS = {:#x}\n", config::BASE_ADDRESS);
-    print!("Boot HartID = {}, DTB Address = {:#x}\n", hartid, dtb_addr);
+    // 测试日志输出
+    debug!("Debug Console Test: 0x{:x}", 0xdeadbeefu32 as i32);
+    info!("Info Console Test: 0x{:x}", 0xdeadbeefu32 as i32);
+    warn!("Warn Console Test: 0x{:x}", 0xdeadbeefu32 as i32);
+    error!("Error Console Test: 0x{:x}", 0xdeadbeefu32 as i32);
+
+    info!("\n============ Mars-rCore ============");
+    info!("BASE_ADDRESS = {:#x}", config::BASE_ADDRESS);
+    info!("Boot HartID = {}, DTB Address = {:#x}", hartid, dtb_addr);
 
     for i in 0..10 {
         print!("\r> Reboot in {} seconds ...", 10 - i);
