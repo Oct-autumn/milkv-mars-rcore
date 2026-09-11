@@ -167,3 +167,8 @@ pub fn run_next_app() -> ! {
     }
     panic!("Unreachable in batch::run_current_app!");
 }
+
+/// 获取当前运行的应用程序的用户栈基址
+pub fn get_current_user_stack_base() -> usize {
+    USER_STACK.data.as_ptr() as usize
+}

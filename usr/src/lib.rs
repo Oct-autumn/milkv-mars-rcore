@@ -43,13 +43,13 @@ fn clear_bss() {
 /// - fd: 文件描述符
 /// - buf: 要写入的数据
 #[allow(unused)]
-fn write(fd: usize, buf: &[u8]) -> isize {
+pub fn write(fd: usize, buf: &[u8]) -> isize {
     sys_write(fd, buf)
 }
 
 /// 退出程序
 /// - code: 退出码
 #[allow(unused)]
-fn exit(code: i32) -> ! {
+pub fn exit(code: i32) -> ! {
     sys_exit(code)
 }
