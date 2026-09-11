@@ -7,6 +7,7 @@ mod console;
 mod lang_items;
 mod log;
 mod sbi_call;
+mod stack_trace;
 mod sync;
 mod sys_call;
 mod time;

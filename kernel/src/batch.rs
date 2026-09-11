@@ -3,9 +3,9 @@ use crate::config::{
 };
 use crate::sbi_call::shutdown;
 use crate::sync::UPSafeCell;
-use crate::time;
 use crate::trap::TrapContext;
 use crate::{debug, info, linker_symbol_addr, print};
+use crate::{time, warn};
 use core::arch::asm;
 use lazy_static::*;
 use sbi::system_reset::{ResetReason, ResetType};
@@ -76,7 +76,7 @@ impl AppManager {
 
     fn load_app(&self, app_id: usize) {
         if app_id >= self.num_app {
-            info!("All applications completed!");
+            warn!("All applications completed!");
 
             for i in 0..10 {
                 print!("\r> Shutdown in {: >2} seconds...", 10 - i);
