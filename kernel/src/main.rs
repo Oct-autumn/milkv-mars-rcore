@@ -1,18 +1,22 @@
 #![no_std]
 #![no_main]
 
+mod batch;
 mod config;
 mod console;
 mod lang_items;
 mod log;
 mod sbi_call;
+mod sync;
+mod sys_call;
 mod time;
+mod trap;
 
 use core::arch::global_asm;
 
-use sbi::system_reset::{ResetReason, ResetType};
-
 global_asm!(include_str!("start.S"));
+
+global_asm! {include_str!(concat!(env!("OUT_DIR"), "/usr_linker.S"))}
 
 #[unsafe(no_mangle)]
 fn main(hartid: usize, dtb_addr: usize) -> ! {
@@ -32,15 +36,13 @@ fn main(hartid: usize, dtb_addr: usize) -> ! {
     info!("BASE_ADDRESS = {:#x}", config::BASE_ADDRESS);
     info!("Boot HartID = {}, DTB Address = {:#x}", hartid, dtb_addr);
 
-    for i in 0..10 {
-        print!("\r> Reboot in {} seconds ...", 10 - i);
-        time::busy_wait_sleep(1000);
-    }
-    print!("\r> Rebooting now ...\n");
+    trap::init();
 
-    sbi_call::shutdown(ResetType::ColdReboot, ResetReason::NoReason);
+    batch::init();
+    batch::run_next_app();
 }
 
+#[macro_export]
 macro_rules! linker_symbol_addr {
     ($symbol:path) => {
         ($symbol as *const ()).addr()

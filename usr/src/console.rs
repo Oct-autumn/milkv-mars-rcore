@@ -1,15 +1,15 @@
-use crate::sbi_call;
+use crate::sys_call::sys_write;
 
 use core::fmt::{self, Write};
 
 #[allow(unused)]
 struct Stdout;
 
+const STDOUT: usize = 1;
+
 impl Write for Stdout {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        for c in s.chars() {
-            sbi_call::console_putbyte(c as u8);
-        }
+        sys_write(STDOUT, s.as_bytes());
         Ok(())
     }
 }

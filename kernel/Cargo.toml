@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 sbi = { version = "0.3.0" }
 riscv = { version = "0.16.1", features = ["s-mode"] }
+lazy_static = { version = "1.5.0", features = ["spin_no_std"] }
 
 [features]
 default = []

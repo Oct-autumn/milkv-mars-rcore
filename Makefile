@@ -14,7 +14,7 @@ K_BIN := $(WRKDIR)/kernel.bin
 # 最终产物 - 内核 IMG 镜像文件
 K_IMG := $(O)/kernel.bin.img
 
-all: $(K_IMG)
+all: kernel
 
 .PHONY: all clean FORCE
 
@@ -25,7 +25,7 @@ all: $(K_IMG)
 FORCE:
 
 # 调内部Makefile构建内核 BIN 文件
-$(K_BIN): FORCE
+$(K_BIN): FORCE uprog-bin
 	$(MAKE) -C kernel O=$(WRKDIR)
 
 # 使用 tools/scripts/pack_image.py 将 BIN 文件打包为 IMG 镜像文件
@@ -33,6 +33,12 @@ $(K_IMG): $(K_BIN)
 	mkdir -p $(dir $@)
 	python3 tools/scripts/pack_image.py --tbt $< --output $(dir $@)
 
+kernel: $(K_IMG)
+
+uprog-bin: FORCE
+	$(MAKE) -C usr O=$(WRKDIR)/usr
+
 clean:
 	rm -rf $(O) $(WRKDIR)
 	$(MAKE) -C kernel O=$(WRKDIR) clean
+	$(MAKE) -C usr O=$(WRKDIR) clean
