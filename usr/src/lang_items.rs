@@ -3,7 +3,7 @@ use core::panic::PanicInfo;
 use crate::{exit, println};
 
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    println!("panic: {}", _info.message());
+fn panic(info: &PanicInfo) -> ! {
+    println!("panic: {}", info.message());
     exit(-1);
 }

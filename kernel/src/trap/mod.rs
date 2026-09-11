@@ -12,8 +12,7 @@ use riscv::{
     },
 };
 
-use crate::{batch::run_next_app, linker_symbol_addr};
-use crate::{error, sys_call::syscall};
+use crate::{batch::run_next_app, error, linker_symbol_addr, sys_call::syscall};
 
 global_asm!(include_str!("trap.S"));
 
@@ -46,8 +45,7 @@ pub fn trap_handler(cx: &mut TrapContext) -> &mut TrapContext {
                 scause.cause(),
                 stval
             );
-            syscall(93, [1, 0, 0]); // 调用 sys_exit(1) 退出应用程序
-            unreachable!();
+            run_next_app();
         }
     };
     match trap {
@@ -80,7 +78,7 @@ pub fn trap_handler(cx: &mut TrapContext) -> &mut TrapContext {
                 "Unsupported trap {:?}: scause={:?}, stval = {:#x}!",
                 trap, scause, stval
             );
-            syscall(93, [1, 0, 0]); // 调用 sys_exit(1) 退出应用程序
+            run_next_app();
         }
     }
     cx

@@ -2,8 +2,8 @@ use crate::error;
 use core::{arch::asm, panic::PanicInfo};
 
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    error!("Kernel Panic: {}", _info.message());
+fn panic(info: &PanicInfo) -> ! {
+    error!("Kernel Panic: {}", info.message());
     unsafe {
         asm!("wfi");
     }

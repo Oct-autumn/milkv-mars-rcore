@@ -57,10 +57,10 @@ fn parse_int_configs(path: &Path) -> Result<Vec<(String, u64)>, String> {
 }
 
 /// 获取 usr 目录下的用户程序列表，按文件名前缀的数字排序。
-fn get_usr_apps(path: &Path) -> Result<Vec<PathBuf>, String> {
+fn get_usr_apps(path: &Path, max_app_num: usize) -> Result<Vec<PathBuf>, String> {
     let mut apps = fs::read_dir(path)
         .map_err(|e| format!("读取 {} 失败: {}", path.display(), e))?
-        .filter_map(|f_res| f_res.ok().and_then(|f| Some(f.path())))
+        .filter_map(|f_res| f_res.ok().map(|f| f.path()))
         .collect::<Vec<_>>();
 
     // 将apps按文件名前缀的数字排序
@@ -78,17 +78,23 @@ fn get_usr_apps(path: &Path) -> Result<Vec<PathBuf>, String> {
             .unwrap_or(usize::MAX)
     });
 
+    let app_nums = apps.len();
+    if app_nums < 1 {
+        return Err("未找到任何用户程序".to_string());
+    } else if app_nums > max_app_num {
+        return Err(format!(
+            "用户程序数量过多（{}），请确保不超过 {} 个",
+            app_nums, max_app_num
+        ));
+    }
+
     Ok(apps)
 }
 
 /// 生成 usr_linker.S，将用户程序链入内核。
-fn generate_usr_link_asm(apps: &Vec<PathBuf>, linker: &Path) -> Result<(), String> {
+fn generate_usr_link_asm(apps: &[PathBuf], linker: &Path) -> Result<(), String> {
     // 生成 _num_app 符号
     let app_nums = apps.len();
-
-    if app_nums < 1 {
-        return Err(format!("未找到任何用户程序"));
-    }
 
     fs::write(
         linker,
@@ -143,9 +149,7 @@ fn main() {
     let usr_prog_path = Path::new(&manifest_dir).join(usr_prog_dir);
     let out_dir = env::var("OUT_DIR").expect("OUT_DIR 缺失");
 
-    // ---- 配置变更追踪 ----
-    // 注意：rerun-if-changed 的路径必须是相对 CARGO_MANIFEST_DIR 的路径，
-    // 传绝对路径不会生效（cargo 无法与之匹配）。
+    // ---- 配置变更追踪 (1) ----
     println!("cargo:rerun-if-changed={}", cfg_file);
     println!("cargo:rerun-if-changed={}", lds_file);
 
@@ -198,13 +202,14 @@ pub const APP_SIZE_LIMIT: usize = 0x{:x};
     }
 
     // ---- 分发 4: 生成 usr_linker.S，把用户程序链入内核 ----
-    let usr_apps = match get_usr_apps(&usr_prog_path) {
+    let usr_apps = match get_usr_apps(&usr_prog_path, get("max_app_num").unwrap_or(16) as usize) {
         Ok(apps) => apps,
         Err(e) => {
             eprintln!("build.rs 错误: {e}");
             std::process::exit(1);
         }
     };
+    // ---- 追踪用户程序变更 (2) ----
     for app in &usr_apps {
         // 追踪用户程序变更
         println!("cargo:rerun-if-changed={}", app.display());

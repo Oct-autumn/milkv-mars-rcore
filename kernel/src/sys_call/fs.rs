@@ -1,4 +1,4 @@
-use crate::print;
+use crate::{error, print};
 
 const FD_STDOUT: usize = 1;
 
@@ -16,7 +16,8 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> usize {
             len
         }
         _ => {
-            panic!("Unsupported fd: {fd}");
+            error!("Unsupported fd: {fd}");
+            0
         }
     }
 }

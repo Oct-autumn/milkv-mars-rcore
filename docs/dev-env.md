@@ -67,6 +67,7 @@ rustup target add riscv64gc-unknown-none-elf
 cargo install cargo-binutils
 rustup component add llvm-tools
 rustup component add rust-src
+rustup component add rust-analyzer  # 用于给 VSCode、OpenCode 等提供 Rust 语言的 LSP 支持
 ```
 
 ## IDE配置
