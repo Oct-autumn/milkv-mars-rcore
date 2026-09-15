@@ -1,9 +1,9 @@
 use core::panic::PanicInfo;
 
-use crate::{exit, println};
+use crate::{println, sys_call::process::sys_exit};
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     println!("panic: {}", info.message());
-    exit(-1);
+    sys_exit(-1);
 }

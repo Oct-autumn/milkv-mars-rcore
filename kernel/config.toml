@@ -22,6 +22,8 @@ app_max_size = 0x200000
 kernel_stack_size = 0x2000
 # 用户栈大小（字节）
 user_stack_size = 0x2000
+# 内核时钟中断周期（单位：微秒）
+stimer_interval = 10000
 
 # 日志等级过滤：低于该等级的日志在编译期被折叠剔除，不产生运行时开销，
 # 其字符串字面量也不会进入 kernel.bin。

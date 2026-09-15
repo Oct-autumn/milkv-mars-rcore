@@ -81,10 +81,7 @@ fn parse_log_level(path: &Path) -> Result<String, String> {
             continue;
         }
         let val = val.trim();
-        let Some(v) = val
-            .strip_prefix('"')
-            .and_then(|s| s.strip_suffix('"'))
-        else {
+        let Some(v) = val.strip_prefix('"').and_then(|s| s.strip_suffix('"')) else {
             return Err(format!(
                 "{}:{} log_level 的值必须用双引号括起来，例如 log_level = \"debug\"",
                 path.display(),
@@ -258,6 +255,7 @@ pub const KERNEL_STACK_SIZE: usize = {};
 pub const MAX_APP_NUM: usize = {};
 pub const APP_BASE_ADDRESS: usize = 0x{:x};
 pub const APP_SIZE_LIMIT: usize = 0x{:x};
+pub const STIMER_INTERVAL: usize = {};
 pub const LOG_LEVEL_NAME: &str = "{}";
 "#,
             base_address,
@@ -267,6 +265,7 @@ pub const LOG_LEVEL_NAME: &str = "{}";
             get("max_app_num").unwrap_or(16),
             app_base_address,
             get("app_max_size").unwrap_or(0x200_000),
+            get("stimer_interval").unwrap_or(10_000),
             log_level
         ),
     )

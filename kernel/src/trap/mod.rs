@@ -73,6 +73,10 @@ pub fn trap_handler(cx: &mut TrapContext) -> &mut TrapContext {
             error!("IllegalInstruction in application, kernel killed it.");
             exit_current_task_and_run_next();
         }
+        Trap::Interrupt(Interrupt::SupervisorTimer) => {
+            crate::time::set_next_timer(crate::config::STIMER_INTERVAL);
+            crate::task::suspend_current_task_and_run_next();
+        }
         _ => {
             error!(
                 "Unsupported trap {:?}: scause={:?}, stval = {:#x}!",

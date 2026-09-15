@@ -2,11 +2,12 @@ mod context;
 mod task_info;
 
 use lazy_static::lazy_static;
+use riscv::register::sie;
 use sbi::system_reset::{ResetReason, ResetType};
 
 use crate::{
     app_loader::{get_num_app, init_app_cx},
-    config::MAX_APP_NUM,
+    config::{self, MAX_APP_NUM},
     debug, info,
     sbi_call::shutdown,
     sync::UPSafeCell,
@@ -14,6 +15,8 @@ use crate::{
         context::TaskContext,
         task_info::{TaskControlBlock, TaskStatus},
     },
+    time::set_next_timer,
+    trace,
 };
 
 /// 任务管理器
@@ -33,9 +36,16 @@ impl TaskManager {
         self.inner.exclusive_access().current_task
     }
 
+    fn init(&self) {
+        info!("Prepare to run the first task.");
+        unsafe {
+            sie::set_stimer(); // 使能S-mode时钟中断
+        }
+        set_next_timer(config::STIMER_INTERVAL);
+    }
+
     /// 运行第一个任务
     fn run_first_task(&self) -> ! {
-        info!("Prepare to run the first task.");
         let mut inner = self.inner.exclusive_access();
         let task0 = &mut inner.tasks[0];
         task0.status = TaskStatus::Running;
@@ -69,7 +79,7 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let current = inner.current_task; // 由于Rust的借用规则，必须先获取current_task的值
         inner.tasks[current].status = TaskStatus::Ready;
-        debug!("Task {} yielded.", inner.tasks[current].id);
+        trace!("Task {} yielded.", inner.tasks[current].id);
         drop(inner); // 释放锁，避免在切换上下文时发生死锁
 
         self.run_next_task();
@@ -102,7 +112,7 @@ impl TaskManager {
             }
             inner.tasks[next_task].status = TaskStatus::Running;
             inner.current_task = next_task;
-            debug!(
+            trace!(
                 "Task switch: {} -> {}",
                 inner.tasks[current].id, inner.tasks[next_task].id
             );
@@ -154,6 +164,7 @@ pub fn get_current_task() -> usize {
 }
 
 pub fn run_first_task() -> ! {
+    TASK_MANAGER.init();
     TASK_MANAGER.run_first_task()
 }
 
