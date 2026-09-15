@@ -26,11 +26,9 @@ fn main(hartid: usize, dtb_addr: usize) -> ! {
     // a0: hartid, a1: device tree blob (DTB) 的物理地址
     clear_bss(); // 清零 BSS 段
 
-    // 测试日志输出
-    debug!("Debug Console Test: 0x{:x}", 0xdeadbeefu32 as i32);
-    info!("Info Console Test: 0x{:x}", 0xdeadbeefu32 as i32);
-    warn!("Warn Console Test: 0x{:x}", 0xdeadbeefu32 as i32);
-    error!("Error Console Test: 0x{:x}", 0xdeadbeefu32 as i32);
+    // 打印当前生效的日志等级（用 println! 而非受过滤的 log 宏，
+    // 便于区分“该等级没有日志触发”与“日志被等级过滤”）
+    println!("Mars-rCore log level: {}", config::LOG_LEVEL_NAME);
 
     info!("\n============ Mars-rCore ============");
     info!("BASE_ADDRESS = {:#x}", config::BASE_ADDRESS);

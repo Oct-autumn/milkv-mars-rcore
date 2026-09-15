@@ -4,7 +4,7 @@
 #   - 链接脚本：通过 -defsym=BASE_ADDRESS=... 注入（链接器"宏"）
 #   - Rust 源码：生成 OUT_DIR/generated.rs 中的常量，经 config.rs 引入
 #
-# 所有数值配置（十六进制或十进制均可）在此统一管理。
+# 数值配置（十六进制或十进制均可）与字符串配置（如 log_level）在此统一管理。
 
 # 内核加载基址
 base_address = 0x40200000
@@ -22,3 +22,8 @@ app_max_size = 0x200000
 kernel_stack_size = 0x2000
 # 用户栈大小（字节）
 user_stack_size = 0x2000
+
+# 日志等级过滤：低于该等级的日志在编译期被折叠剔除，不产生运行时开销，
+# 其字符串字面量也不会进入 kernel.bin。
+# 可选：error | warn | info | debug | trace（越靠前越严重；缺省 debug）
+log_level = "debug"

@@ -44,6 +44,10 @@ fn parse_int_configs(path: &Path) -> Result<Vec<(String, u64)>, String> {
         };
         let key = key.trim();
         let val = val.trim();
+        // 带引号的是字符串配置（如 log_level），不属于整数配置，跳过
+        if val.starts_with('"') {
+            continue;
+        }
         let v = if let Some(hex) = val.strip_prefix("0x").or_else(|| val.strip_prefix("0X")) {
             u64::from_str_radix(hex, 16)
                 .map_err(|_| format!("{}:{} 十六进制值非法", path.display(), lineno + 1))?
@@ -54,6 +58,50 @@ fn parse_int_configs(path: &Path) -> Result<Vec<(String, u64)>, String> {
         out.push((key.to_string(), v));
     }
     Ok(out)
+}
+
+/// 解析并校验 config.toml 中的 `log_level` 字符串配置。
+///
+/// 该键控制日志等级过滤，取值范围限定为 error|warn|info|debug|trace；
+/// 未配置时回退到 "debug"（与加入过滤前的可见输出保持一致）。非法值直接报错。
+fn parse_log_level(path: &Path) -> Result<String, String> {
+    const VALID: [&str; 5] = ["error", "warn", "info", "debug", "trace"];
+
+    let content =
+        fs::read_to_string(path).map_err(|e| format!("读取 {} 失败: {}", path.display(), e))?;
+    for (lineno, raw) in content.lines().enumerate() {
+        let line = raw.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some((key, val)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "log_level" {
+            continue;
+        }
+        let val = val.trim();
+        let Some(v) = val
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+        else {
+            return Err(format!(
+                "{}:{} log_level 的值必须用双引号括起来，例如 log_level = \"debug\"",
+                path.display(),
+                lineno + 1
+            ));
+        };
+        if !VALID.contains(&v) {
+            return Err(format!(
+                "{}:{} log_level = \"{}\" 非法，可选：error | warn | info | debug | trace",
+                path.display(),
+                lineno + 1,
+                v
+            ));
+        }
+        return Ok(v.to_string());
+    }
+    Ok("debug".to_string())
 }
 
 /// 获取用户程序产物目录（默认 ../build/usr）下的 `.bin` 列表，按文件名前缀的数字排序。
@@ -169,6 +217,16 @@ fn main() {
         std::process::exit(1);
     }
 
+    // ---- 读取 log_level（字符串配置，缺省 debug）----
+    // 先于整数配置解析：这样未加引号的写法能命中更明确的报错提示
+    let log_level = match parse_log_level(&cfg_path) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("build.rs 错误: {e}");
+            std::process::exit(1);
+        }
+    };
+
     // ---- 读取 config.toml ----
     let configs = match parse_int_configs(&cfg_path) {
         Ok(c) => c,
@@ -200,6 +258,7 @@ pub const KERNEL_STACK_SIZE: usize = {};
 pub const MAX_APP_NUM: usize = {};
 pub const APP_BASE_ADDRESS: usize = 0x{:x};
 pub const APP_SIZE_LIMIT: usize = 0x{:x};
+pub const LOG_LEVEL_NAME: &str = "{}";
 "#,
             base_address,
             get("mtime_frequency").unwrap_or(4_000_000),
@@ -207,7 +266,8 @@ pub const APP_SIZE_LIMIT: usize = 0x{:x};
             get("kernel_stack_size").unwrap_or(4096 * 2),
             get("max_app_num").unwrap_or(16),
             app_base_address,
-            get("app_max_size").unwrap_or(0x200_000)
+            get("app_max_size").unwrap_or(0x200_000),
+            log_level
         ),
     )
     .expect("写入 generated.rs 失败");

@@ -7,7 +7,8 @@ use std::{
 const KERNEL_CONFIG_REL: &str = "../kernel/config.toml";
 
 /// 解析 config.toml 中形如 `key = value` 的整型配置项。
-/// 返回 (key, 十进制或十六进制整数值) 列表；# 开头的行为注释。
+/// 返回 (key, 十进制或十六进制整数值) 列表；# 开头的行为注释；
+/// 带引号的字符串配置（如 log_level）会被跳过。
 /// 解析规则与 kernel/build.rs 保持一致。
 fn parse_int_configs(path: &Path) -> Result<Vec<(String, u64)>, String> {
     let content =
@@ -27,6 +28,10 @@ fn parse_int_configs(path: &Path) -> Result<Vec<(String, u64)>, String> {
         };
         let key = key.trim();
         let val = val.trim();
+        // 带引号的是字符串配置（如 log_level），不属于整数配置，跳过
+        if val.starts_with('"') {
+            continue;
+        }
         let v = if let Some(hex) = val.strip_prefix("0x").or_else(|| val.strip_prefix("0X")) {
             u64::from_str_radix(hex, 16)
                 .map_err(|_| format!("{}:{} 十六进制值非法", path.display(), lineno + 1))?
