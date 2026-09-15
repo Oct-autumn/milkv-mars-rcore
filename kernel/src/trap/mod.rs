@@ -35,6 +35,9 @@ pub fn init() {
 /// - 返回值: 处理后的中断上下文
 #[unsafe(no_mangle)]
 pub fn trap_handler(cx: &mut TrapContext) -> &mut TrapContext {
+    // 计时打点（E2）：trap 只可能来自 U 态，先结算本段用户态执行时间
+    crate::task::account_trap_entry();
+
     let scause = scause::read();
     let stval = stval::read();
     let trap: Trap<Interrupt, Exception> = match scause.cause().try_into() {
@@ -85,5 +88,7 @@ pub fn trap_handler(cx: &mut TrapContext) -> &mut TrapContext {
             exit_current_task_and_run_next();
         }
     }
+    // 计时打点（E3）：返回用户态前结算本段内核态执行时间
+    crate::task::account_trap_exit();
     cx
 }

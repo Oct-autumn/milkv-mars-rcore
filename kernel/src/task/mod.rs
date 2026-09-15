@@ -15,7 +15,7 @@ use crate::{
         context::TaskContext,
         task_info::{TaskControlBlock, TaskStatus},
     },
-    time::set_next_timer,
+    time::{get_time, set_next_timer},
     trace,
 };
 
@@ -36,6 +36,39 @@ impl TaskManager {
         self.inner.exclusive_access().current_task
     }
 
+    /// 计时打点（trap 入口 E2）：结算刚结束的用户态片段，并开启内核态片段。
+    ///
+    /// trap 只可能来自 U 态，因此自上次打点以来的这段时间即为用户态执行时间。
+    fn account_trap_entry(&self) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let now = get_time();
+        let tcb = &mut inner.tasks[current];
+        tcb.u_run_time += now - tcb.last_enter_time;
+        tcb.last_enter_time = now;
+    }
+
+    /// 计时打点（trap 出口 E3）：结算刚结束的内核态片段，并开启用户态片段。
+    fn account_trap_exit(&self) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let now = get_time();
+        let tcb = &mut inner.tasks[current];
+        tcb.k_run_time += now - tcb.last_enter_time;
+        tcb.last_enter_time = now;
+    }
+
+    /// 读取当前任务的 (用户态运行时间, 内核态运行时间)，单位：微秒。
+    ///
+    /// 调用时当前内核态片段尚未闭合（要等返回用户态或被换出才结算），
+    /// 故用 `now - last_enter_time` 将其补足。
+    fn current_task_times(&self) -> (usize, usize) {
+        let inner = self.inner.exclusive_access();
+        let tcb = &inner.tasks[inner.current_task];
+        let now = get_time();
+        (tcb.u_run_time, tcb.k_run_time + (now - tcb.last_enter_time))
+    }
+
     fn init(&self) {
         info!("Prepare to run the first task.");
         unsafe {
@@ -49,6 +82,8 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let task0 = &mut inner.tasks[0];
         task0.status = TaskStatus::Running;
+        // 计时打点（换入 E1）：首个用户态片段从当前时刻开始
+        task0.last_enter_time = get_time();
         debug!("Task {} starts running.", task0.id);
         let next_task_cx_ptr = &task0.cx as *const TaskContext;
         drop(inner);
@@ -112,6 +147,13 @@ impl TaskManager {
             }
             inner.tasks[next_task].status = TaskStatus::Running;
             inner.current_task = next_task;
+            // 计时打点（换出 E4 / 换入 E1）：__switch 只在内核中被调用，故被换下的
+            // 任务此刻必处于内核态，把本段内核耗时结算进 k_run_time；被换入的任务
+            // 从当前时刻开启新片段，从而把 off-CPU 的时间排除在统计之外。
+            let now = get_time();
+            let current_tcb = &mut inner.tasks[current];
+            current_tcb.k_run_time += now - current_tcb.last_enter_time;
+            inner.tasks[next_task].last_enter_time = now;
             trace!(
                 "Task switch: {} -> {}",
                 inner.tasks[current].id, inner.tasks[next_task].id
@@ -142,6 +184,9 @@ lazy_static! {
             id: 0,
             status: TaskStatus::UnInit,
             cx: TaskContext::zero_init(),
+            u_run_time: 0,
+            k_run_time: 0,
+            last_enter_time: 0,
         }; MAX_APP_NUM];
         for (i, tcb) in tasks.iter_mut().enumerate().take(num_app) {
             tcb.id = i;
@@ -161,6 +206,18 @@ lazy_static! {
 
 pub fn get_current_task() -> usize {
     TASK_MANAGER.get_current_task()
+}
+
+pub fn account_trap_entry() {
+    TASK_MANAGER.account_trap_entry();
+}
+
+pub fn account_trap_exit() {
+    TASK_MANAGER.account_trap_exit();
+}
+
+pub fn current_task_times() -> (usize, usize) {
+    TASK_MANAGER.current_task_times()
 }
 
 pub fn run_first_task() -> ! {

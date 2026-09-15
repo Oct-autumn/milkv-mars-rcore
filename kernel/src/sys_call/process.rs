@@ -5,6 +5,7 @@ use crate::{
     config::{APP_SIZE_LIMIT, USER_STACK_SIZE},
     error, info,
     task::{exit_current_task_and_run_next, get_current_task, suspend_current_task_and_run_next},
+    time::RunTime,
     warn,
 };
 
@@ -12,11 +13,19 @@ use crate::{
 ///
 /// - code: 退出码
 pub fn sys_exit(code: i32) -> ! {
+    // 先取统计值再打印，避免把“打印退出信息”本身的耗时也算进内核态时间
+    let (user_time, kernel_time) = crate::task::current_task_times();
     if code == 0 {
         info!("Program exited with code 0.");
     } else {
         warn!("Program exited with code {}.", code);
     }
+    info!(
+        "Task {} run time: user = {}s, kernel = {}s",
+        get_current_task(),
+        RunTime(user_time),
+        RunTime(kernel_time)
+    );
     exit_current_task_and_run_next();
 }
 
