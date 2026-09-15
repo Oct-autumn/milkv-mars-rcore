@@ -41,7 +41,11 @@ SECTIONS
     ebss = .;
     ekernel = .;
 
+    ASSERT(ekernel <= APP_BASE_ADDRESS,
+           "kernel image overlaps APP_BASE_ADDRESS; enlarge the gap between kernel and apps")
+
     /DISCARD/ : {
         *(.eh_frame)
+        *(.debug*)
     }
 }

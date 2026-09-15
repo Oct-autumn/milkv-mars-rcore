@@ -68,7 +68,13 @@ __alltraps:
  */
 __restore:
     # trap_handler 返回后，我们需要恢复寄存器的值
-    mv sp, a0  # trap_handler 返回时，a0 中保存了 TrapContext 的地址
+    
+    # 在多道程序OS中，不再需要这条指令
+    # 因为 __restore 不再是以函数形式调用，它的执行只有两种场景：
+    # 1. trap_handler 返回时：此时sp仍然指向TrapContext的地址不变，该指令无用；
+    # 2. 执行首个应用程序时：从TaskContext恢复寄存器时，sp已经被正确的指向内核栈地址
+    #   （其中有init_app_cx创建的初始TrapContext），该指令无用。
+    #mv sp, a0  # trap_handler 返回时，a0 中保存了 TrapContext 的地址
 
     # 恢复 sstatus、sepc、sscratch
     ld t0, 32*8(sp)  # 取 sstatus

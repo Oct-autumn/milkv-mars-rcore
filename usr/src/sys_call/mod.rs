@@ -3,10 +3,11 @@ mod process;
 
 use core::arch::asm;
 pub use fs::sys_write;
-pub use process::sys_exit;
+pub use process::{sys_exit, sys_yield};
 
 const SYS_WRITE: usize = 64;
 const SYS_EXIT: usize = 93;
+const SYS_YIELD: usize = 124;
 
 /// 执行系统调用
 fn syscall(id: usize, args: [usize; 3]) -> isize {

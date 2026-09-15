@@ -6,10 +6,3 @@ pub fn get_time() -> usize {
     let time = time::read();
     (time / (config::MTIME_FREQUENCY / 1000000)) as usize
 }
-
-/// 忙等睡眠
-pub fn busy_wait_sleep(ms: usize) {
-    let start = time::read();
-    let end = start + ms * (config::MTIME_FREQUENCY / 1000);
-    while time::read() < end {}
-}

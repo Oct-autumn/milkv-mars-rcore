@@ -12,7 +12,7 @@ use riscv::{
     },
 };
 
-use crate::{batch::run_next_app, error, linker_symbol_addr, sys_call::syscall};
+use crate::{error, linker_symbol_addr, sys_call::syscall, task::exit_current_task_and_run_next};
 
 global_asm!(include_str!("trap.S"));
 
@@ -45,7 +45,7 @@ pub fn trap_handler(cx: &mut TrapContext) -> &mut TrapContext {
                 scause.cause(),
                 stval
             );
-            run_next_app();
+            exit_current_task_and_run_next();
         }
     };
     match trap {
@@ -54,7 +54,7 @@ pub fn trap_handler(cx: &mut TrapContext) -> &mut TrapContext {
             // 1. 将sepc指向下一条指令，这样调用返回后用户程序就可以继续执行了
             // 2. 调用syscall函数处理系统调用
             cx.sepc += 4;
-            cx.x[10] = syscall(cx.x[17], [cx.x[10], cx.x[11], cx.x[12]]);
+            cx.x[10] = syscall(cx.x[17], [cx.x[10], cx.x[11], cx.x[12]]) as usize;
         }
         Trap::Exception(Exception::StoreFault) | Trap::Exception(Exception::StorePageFault) => {
             // 无 MMU（satp=0）时不可能出现真正的 PageFault（cause 15）；
@@ -67,18 +67,18 @@ pub fn trap_handler(cx: &mut TrapContext) -> &mut TrapContext {
                 "Store fault from {}-mode: scause={:?}, stval={:#x}, sepc={:#x}",
                 from, trap, stval, cx.sepc
             );
-            run_next_app();
+            exit_current_task_and_run_next();
         }
         Trap::Exception(Exception::IllegalInstruction) => {
             error!("IllegalInstruction in application, kernel killed it.");
-            run_next_app();
+            exit_current_task_and_run_next();
         }
         _ => {
             error!(
                 "Unsupported trap {:?}: scause={:?}, stval = {:#x}!",
                 trap, scause, stval
             );
-            run_next_app();
+            exit_current_task_and_run_next();
         }
     }
     cx

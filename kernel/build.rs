@@ -56,11 +56,13 @@ fn parse_int_configs(path: &Path) -> Result<Vec<(String, u64)>, String> {
     Ok(out)
 }
 
-/// 获取 usr 目录下的用户程序列表，按文件名前缀的数字排序。
+/// 获取用户程序产物目录（默认 ../build/usr）下的 `.bin` 列表，按文件名前缀的数字排序。
 fn get_usr_apps(path: &Path, max_app_num: usize) -> Result<Vec<PathBuf>, String> {
     let mut apps = fs::read_dir(path)
         .map_err(|e| format!("读取 {} 失败: {}", path.display(), e))?
         .filter_map(|f_res| f_res.ok().map(|f| f.path()))
+        // 只认 .bin，避免把目录或编辑器临时文件误当成用户程序
+        .filter(|p| p.extension().is_some_and(|ext| ext == "bin"))
         .collect::<Vec<_>>();
 
     // 将apps按文件名前缀的数字排序
@@ -142,16 +144,30 @@ fn main() {
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR 缺失");
     let cfg_file = "config.toml";
     let lds_file = "src/linker.lds";
-    let usr_prog_dir = "../build/usr";
+    // 用户程序产物目录：由 Makefile 通过 USR_BIN_DIR 注入，未设置时回退到 ../build/usr
+    let usr_prog_dir = env::var("USR_BIN_DIR").unwrap_or_else(|_| "../build/usr".to_string());
 
     let cfg_path = Path::new(&manifest_dir).join(cfg_file);
     let lds_path = Path::new(&manifest_dir).join(lds_file);
-    let usr_prog_path = Path::new(&manifest_dir).join(usr_prog_dir);
+    let usr_prog_path = Path::new(&manifest_dir).join(&usr_prog_dir);
     let out_dir = env::var("OUT_DIR").expect("OUT_DIR 缺失");
 
     // ---- 配置变更追踪 (1) ----
     println!("cargo:rerun-if-changed={}", cfg_file);
     println!("cargo:rerun-if-changed={}", lds_file);
+    // 目录级追踪：逐文件追踪无法感知“新增/删除”用户程序，必须额外盯住目录本身
+    println!("cargo:rerun-if-changed={}", usr_prog_dir);
+    println!("cargo:rerun-if-env-changed=USR_BIN_DIR");
+
+    // 目录缺失时给出可操作的提示（干净检出/未先构建 usr 时会出现）
+    if !usr_prog_path.is_dir() {
+        eprintln!(
+            "build.rs 错误: 未找到用户程序目录 {}。\n\
+             请先在仓库根目录执行 `make`（或 `make uprog-bin`）以生成用户程序。",
+            usr_prog_path.display()
+        );
+        std::process::exit(1);
+    }
 
     // ---- 读取 config.toml ----
     let configs = match parse_int_configs(&cfg_path) {
@@ -164,9 +180,12 @@ fn main() {
     let get = |key: &str| configs.iter().find(|(k, _)| k == key).map(|(_, v)| *v);
 
     let base_address = get("base_address").unwrap_or(0x4020_0000);
+    let app_base_address = get("app_base_address").unwrap_or(0x4040_0000);
 
     // ---- 分发 1: 注入链接脚本宏（rust-lld 的 -defsym 机制）----
     println!("cargo:rustc-link-arg=-defsym=BASE_ADDRESS=0x{base_address:x}");
+    // 供 linker.lds 中的 ASSERT 使用，确保内核镜像不会压到应用区
+    println!("cargo:rustc-link-arg=-defsym=APP_BASE_ADDRESS=0x{app_base_address:x}");
 
     // ---- 分发 2: 生成 Rust 常量（Rust 侧与链接脚本共享同一事实来源）----
     let generated = Path::new(&out_dir).join("generated.rs");
@@ -187,7 +206,7 @@ pub const APP_SIZE_LIMIT: usize = 0x{:x};
             get("user_stack_size").unwrap_or(4096 * 2),
             get("kernel_stack_size").unwrap_or(4096 * 2),
             get("max_app_num").unwrap_or(16),
-            get("app_base_address").unwrap_or(0x8040_0000),
+            app_base_address,
             get("app_max_size").unwrap_or(0x200_000)
         ),
     )

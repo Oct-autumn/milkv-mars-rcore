@@ -1,4 +1,8 @@
-use crate::{batch::run_next_app, info, warn};
+use crate::{
+    info,
+    task::{exit_current_task_and_run_next, suspend_current_task_and_run_next},
+    warn,
+};
 
 /// 执行 exit 系统调用
 ///
@@ -9,5 +13,13 @@ pub fn sys_exit(code: i32) -> ! {
     } else {
         warn!("Program exited with code {}.", code);
     }
-    run_next_app()
+    exit_current_task_and_run_next();
+}
+
+/// 执行 yield 系统调用
+///
+/// - 返回值: isize, 0表示成功
+pub fn sys_yield() -> isize {
+    suspend_current_task_and_run_next();
+    0
 }

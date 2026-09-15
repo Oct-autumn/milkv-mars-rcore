@@ -3,7 +3,9 @@ target = "riscv64gc-unknown-none-elf"
 target-dir = "target"
 
 [target.riscv64gc-unknown-none-elf]
+# 注意：链接脚本已改由 build.rs 为每个应用程序单独生成，并通过
+# cargo:rustc-link-arg-bin 逐个注入。此处切勿再全局指定 -T，
+# 否则同一次链接会出现两个链接脚本，导致段区间重叠报错。
 rustflags = [
-    "-Clink-arg=-Tsrc/linker.lds", # 指定链接脚本
     "-Cforce-frame-pointers=yes",  # 保留帧指针，便于调试
 ]

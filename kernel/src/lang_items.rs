@@ -1,5 +1,7 @@
-use crate::{error, stack_trace::print_stack_trace};
-use core::{arch::asm, panic::PanicInfo};
+use sbi::system_reset::{ResetReason, ResetType};
+
+use crate::{error, sbi_call::shutdown, stack_trace::print_stack_trace};
+use core::panic::PanicInfo;
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
@@ -14,8 +16,6 @@ fn panic(info: &PanicInfo) -> ! {
     }
     unsafe {
         print_stack_trace();
-        asm!("wfi");
     }
-    // 由于WFI指令只是建议式的，因此我们在这里使用一个无限循环来确保CPU不会继续执行其他指令。
-    loop {}
+    shutdown(ResetType::Shutdown, ResetReason::SystemFailure);
 }

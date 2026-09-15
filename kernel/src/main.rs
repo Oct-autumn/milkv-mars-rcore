@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-mod batch;
+mod app_loader;
 mod config;
 mod console;
 mod lang_items;
@@ -10,6 +10,7 @@ mod sbi_call;
 mod stack_trace;
 mod sync;
 mod sys_call;
+mod task;
 mod time;
 mod trap;
 
@@ -25,8 +26,6 @@ fn main(hartid: usize, dtb_addr: usize) -> ! {
     // a0: hartid, a1: device tree blob (DTB) 的物理地址
     clear_bss(); // 清零 BSS 段
 
-    let _ = config::BASE_ADDRESS;
-
     // 测试日志输出
     debug!("Debug Console Test: 0x{:x}", 0xdeadbeefu32 as i32);
     info!("Info Console Test: 0x{:x}", 0xdeadbeefu32 as i32);
@@ -39,8 +38,8 @@ fn main(hartid: usize, dtb_addr: usize) -> ! {
 
     trap::init();
 
-    batch::init();
-    batch::run_next_app();
+    app_loader::load_apps();
+    task::run_first_task();
 }
 
 #[macro_export]

@@ -6,4 +6,8 @@
         "riscv64gc-unknown-none-elf"
     ],
     "rust-analyzer.server.path": "~/.cargo/bin/rust-analyzer",
+    "editor.rulers": [
+        120,
+        180
+    ]
 }

@@ -23,7 +23,7 @@ FORCE:
 
 # 依赖判断全部交由 cargo 完成：
 #   - .rs/.S/Cargo.toml/features 等由 cargo 增量机制原生追踪；
-#   - config.toml 与 linker.lds 由 build.rs 追踪并触发重链。
+#   - 各用户程序的链接脚本由 build.rs 逐个生成并注入，app 集合变化后 cargo 会重链。
 # make 无需也不应复刻这套逻辑，故用 FORCE 保证 cargo 每次都被调用；
 # cargo 判定无需重编时不会重写 ELF（mtime 不变）。
 elf: FORCE
@@ -38,3 +38,6 @@ bin: elf
 
 clean:
 	rm -rf $(WRKDIR)
+
+cargo-check:
+	cargo check --target-dir $(WRKDIR) --release

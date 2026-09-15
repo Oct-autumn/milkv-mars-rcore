@@ -8,6 +8,9 @@ WRKDIR := build
 # 将工作目录设置为绝对路径，避免在不同目录下 执行make / 传参 时出现路径问题
 WRKDIR := $(abspath build)
 
+# 导出用户程序产物目录，供 kernel/build.rs 读取
+export USR_BIN_DIR := $(WRKDIR)/usr
+
 # Kernel BIN 文件路径
 K_BIN := $(WRKDIR)/kernel.bin
 

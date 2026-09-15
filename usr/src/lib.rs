@@ -4,8 +4,6 @@ pub mod console;
 mod lang_items;
 mod sys_call;
 
-use sys_call::{sys_exit, sys_write};
-
 macro_rules! linker_symbol_addr {
     ($symbol:path) => {
         ($symbol as *const ()).addr()
@@ -44,12 +42,19 @@ fn clear_bss() {
 /// - buf: 要写入的数据
 #[allow(unused)]
 pub fn write(fd: usize, buf: &[u8]) -> isize {
-    sys_write(fd, buf)
+    sys_call::sys_write(fd, buf)
 }
 
 /// 退出程序
 /// - code: 退出码
 #[allow(unused)]
 pub fn exit(code: i32) -> ! {
-    sys_exit(code)
+    sys_call::sys_exit(code)
+}
+
+/// 挂起程序
+/// - 返回值: isize, 0表示成功
+#[allow(unused)]
+pub fn yield_() -> isize {
+    sys_call::sys_yield()
 }

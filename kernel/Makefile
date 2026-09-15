@@ -5,6 +5,10 @@ O ?= build
 # 不要修改该变量，应与 .cargo/config.toml 中的 target-dir 保持一致
 WRKDIR := target
 
+# 用户程序产物目录，供 build.rs 读取（顶层 Makefile 会以同名环境变量覆盖）
+USR_BIN_DIR ?= $(abspath ../build/usr)
+export USR_BIN_DIR
+
 # 内核 ELF 文件路径
 K_ELF := $(WRKDIR)/riscv64gc-unknown-none-elf/release/kernel
 # 内核 BIN 文件路径
@@ -33,3 +37,6 @@ $(K_BIN): $(K_ELF)
 
 clean:
 	rm -rf $(WRKDIR)
+
+cargo-check:
+	cargo check --target-dir $(WRKDIR) --release

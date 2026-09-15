@@ -14,8 +14,7 @@ base_address = 0x40200000
 mtime_frequency = 4000000
 # 内核支持的最大应用程序数量
 max_app_num = 16
-# 应用程序基址（须与 usr/src/linker.lds 的 BASE_ADDRESS 保持一致）
-# 取内核基址 0x40200000 之后 2MB，位于已验证可访问的低地址 DDR 窗口内
+# 应用程序基址（须与 usr/build.rs 的 APP_BASE_ADDRESS 保持一致）
 app_base_address = 0x40400000
 # 应用程序最大大小（字节）
 app_max_size = 0x200000
