@@ -32,6 +32,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 **注意：** 
 - 安装时选择`nightly`工具链，因为我们的要使用一些nightly特性；
+- **该 nightly 自带的 LLVM 必须 ≥ 23**（用 `ls $(rustc --print sysroot)/lib | grep libLLVM` 确认）。版本过旧时，`trap.S` 中的浮点汇编会被误报为 `instruction requires 'D'`——这是上游缺陷 [rust-lang/rust#80608](https://github.com/rust-lang/rust/issues/80608)，已由 rustc PR #160594 修复；
 - 由于未使用`sudo`，请确保将`~/.cargo/bin`添加到`PATH`中，并重启终端使其生效；
 
 ### 检查 Rust 是否安装成功
@@ -45,7 +46,7 @@ rustc --version
 你应该看到类似如下输出：
 
 ```
-rustc 1.99.0-nightly (c4af71034 2026-07-06)
+rustc 1.100.0-nightly (215a8af4b 2026-09-15)
 ```
 
 ### （可选）Cargo 换源
@@ -63,12 +64,13 @@ registry = "sparse+https://mirrors.aliyun.com/crates.io-index/"
 ### 安装 Rust 相关的软件包
 
 ```bash
-rustup target add riscv64gc-unknown-none-elf
 cargo install cargo-binutils
 rustup component add llvm-tools
 rustup component add rust-src
 rustup component add rust-analyzer  # 用于给 VSCode、OpenCode 等提供 Rust 语言的 LSP 支持
 ```
+
+其中 `rust-src` 是必需的：内核与用户程序都构建在自定义 target spec 之上，需要借助 `build-std` 从源码编译 `core`，因此无需再 `rustup target add` 预编译的 riscv 标准库。
 
 ## IDE配置
 

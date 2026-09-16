@@ -9,8 +9,8 @@ pub fn get_time() -> usize {
 
 /// 以 `秒.毫秒`（保留 3 位小数，如 `1.234s`）显示一段以微秒为单位的时间。
 ///
-/// 与 `log::LogTimestamp` 一样刻意使用整数运算而非浮点，使内核不执行任何硬浮点
-/// 指令（原因见 `trap/context.rs`：TrapContext 目前不保存浮点寄存器）。
+/// 与 `log::LogTimestamp` 一样刻意使用整数运算而非浮点格式化。一方面整数运算更快，
+/// 另一方面浮点数格式化输出会增加内核体积（浮点数格式化依赖 libcore 中的 `float` 模块，约 20KB）。
 pub struct RunTime(pub usize);
 
 impl core::fmt::Display for RunTime {

@@ -9,8 +9,11 @@ WRKDIR := target
 USR_BIN_DIR ?= $(abspath ../build/usr)
 export USR_BIN_DIR
 
+# 目标平台：通常由顶层 Makefile 定义并导出；单独在本目录构建时回退到默认值
+TARGET_NAME ?= riscv64gc-unknown-none-elf-jh7110
+
 # 内核 ELF 文件路径
-K_ELF := $(WRKDIR)/riscv64gc-unknown-none-elf/release/kernel
+K_ELF := $(WRKDIR)/$(TARGET_NAME)/release/kernel
 # 内核 BIN 文件路径
 K_BIN := $(O)/kernel.bin
 
@@ -40,3 +43,4 @@ clean:
 
 cargo-check:
 	cargo check --target-dir $(WRKDIR) --release
+	cargo clippy

@@ -1,9 +1,16 @@
 [build]
-target = "riscv64gc-unknown-none-elf"
+target = "../riscv64gc-unknown-none-elf-jh7110.json"
 target-dir = "target"
 
-[target.riscv64gc-unknown-none-elf]
-# 注意：链接脚本已改由 build.rs 为每个应用程序单独生成，并通过
+[unstable]
+build-std = ["core"]
+# 使用自定义 target spec（.json）需要显式开启该 unstable 选项
+json-target-spec = true
+
+# 注意：自定义 JSON target 的配置表 key 是「去掉 .json 后缀的文件名」。
+# 即 ../riscv64gc-unknown-none-elf-jh7110.json -> riscv64gc-unknown-none-elf-jh7110
+[target.riscv64gc-unknown-none-elf-jh7110]
+# 链接脚本已改由 build.rs 为每个应用程序单独生成，并通过
 # cargo:rustc-link-arg-bin 逐个注入。此处切勿再全局指定 -T，
 # 否则同一次链接会出现两个链接脚本，导致段区间重叠报错。
 rustflags = [

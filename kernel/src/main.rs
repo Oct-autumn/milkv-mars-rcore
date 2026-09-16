@@ -52,6 +52,13 @@ fn clear_bss() {
         safe fn sbss();
         safe fn ebss();
     }
+    // 显式启用硬浮点单元
+    let mut sstatus = riscv::register::sstatus::read();
+    sstatus.set_fs(riscv::register::sstatus::FS::Initial);
+    unsafe {
+        riscv::register::sstatus::write(sstatus);
+    }
+
     (linker_symbol_addr!(sbss)..linker_symbol_addr!(ebss))
         .for_each(|a| unsafe { (a as *mut u8).write_volatile(0) });
 }

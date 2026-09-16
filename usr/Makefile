@@ -5,7 +5,10 @@ O ?= build
 # 不要修改该变量，应与 .cargo/config.toml 中的 target-dir 保持一致
 WRKDIR := target
 
-TARGET_DIR := $(WRKDIR)/riscv64gc-unknown-none-elf/release
+# 目标平台：通常由顶层 Makefile 定义并导出；单独在本目录构建时回退到默认值
+TARGET_NAME ?= riscv64gc-unknown-none-elf-jh7110
+
+TARGET_DIR := $(WRKDIR)/$(TARGET_NAME)/release
 
 # 用户程序源码目录
 U_SRCDIR := src/bin
@@ -52,3 +55,4 @@ clean:
 
 cargo-check:
 	cargo check --target-dir $(WRKDIR) --release
+	cargo clippy

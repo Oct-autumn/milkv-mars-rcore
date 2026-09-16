@@ -22,7 +22,9 @@ Milk-V Mars 是一款基于 JH7110 处理器的 RISC-V 开发板，具有丰富�
 要搭建开发环境，请参考 [开发环境搭建](docs/dev-env.md)。此处只列出关键依赖：
 
 - Rust 工具链
-    - Rust 1.99.0-nightly (c4af71034 2026-07-06)
+    - Rust 1.100.0-nightly (215a8af4b 2026-09-15)，且 LLVM 需 ≥ 23
+        - 必须为 nightly：构建依赖 `build-std` 与自定义 target spec（`json-target-spec`）两个 unstable 特性
+        - 版本下限来自 [rust-lang/rust#80608](https://github.com/rust-lang/rust/issues/80608) 的上游修复（rustc PR #160594，需 LLVM ≥ 23）：低于该版本时，`trap.S` 中的浮点汇编会被误报为 `instruction requires 'D'`
 - Python 3.12
 
 ## 构建&上板测试

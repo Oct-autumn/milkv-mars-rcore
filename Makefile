@@ -8,6 +8,13 @@ WRKDIR := build
 # 将工作目录设置为绝对路径，避免在不同目录下 执行make / 传参 时出现路径问题
 WRKDIR := $(abspath build)
 
+# 目标平台：自定义 target spec 的文件名去掉 .json 后缀。
+# cargo 以该名字作为 target 子目录名，因此必须与 kernel / usr 的
+# .cargo/config.toml 中 build.target 指向的 JSON 文件保持一致。
+# 在此统一定义并导出，子 Makefile 不再各自维护；单独构建子目录时会回退到默认值。
+TARGET_NAME := riscv64gc-unknown-none-elf-jh7110
+export TARGET_NAME
+
 # 导出用户程序产物目录，供 kernel/build.rs 读取
 export USR_BIN_DIR := $(WRKDIR)/usr
 

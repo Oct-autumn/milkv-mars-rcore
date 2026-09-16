@@ -9,9 +9,8 @@ use core::fmt;
 /// 日志时间戳（微秒），以整数运算显示为 `秒.毫秒`。
 /// 通过 time::get_time() 获取时间（微秒），格式化为"秒.毫秒"
 ///
-/// 注意：这里刻意使用整数运算而非浮点，使内核不执行任何硬浮点指令。
-/// 原因见 trap/context.rs：TrapContext 目前不保存浮点寄存器，内核若在
-/// trap 处理路径中用到浮点，就会破坏用户程序的 f0~f31/fcsr。
+/// 注意：这里刻意使用整数运算而非浮点运算。一方面整数运算更快，
+/// 另一方面浮点数格式化输出会增加内核体积（浮点数格式化依赖 libcore 中的 `float` 模块，约 20KB）。
 pub(crate) struct LogTimestamp(pub usize);
 
 impl fmt::Display for LogTimestamp {

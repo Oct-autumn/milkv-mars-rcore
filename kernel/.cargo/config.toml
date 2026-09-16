@@ -1,8 +1,16 @@
 [build]
-target = "riscv64gc-unknown-none-elf"
+target = "../riscv64gc-unknown-none-elf-jh7110.json"
 target-dir = "target"
 
-[target.riscv64gc-unknown-none-elf]
+[unstable]
+build-std = ["core", "alloc"]
+# 使用自定义 target spec（.json）需要显式开启该 unstable 选项
+json-target-spec = true
+
+# 注意：自定义 JSON target 的配置表 key 是「去掉 .json 后缀的文件名」。
+# 即 ../riscv64gc-unknown-none-elf-jh7110.json -> riscv64gc-unknown-none-elf-jh7110
+# 写成 [target."xxx.json"] 或 [target.xxx.json] 都不会被匹配到。
+[target.riscv64gc-unknown-none-elf-jh7110]
 rustflags = [
     "-Clink-arg=-Tsrc/linker.lds", # 指定链接脚本
     "-Cforce-frame-pointers=yes",  # 保留帧指针，便于调试
