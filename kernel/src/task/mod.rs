@@ -38,7 +38,8 @@ impl TaskManager {
 
     /// 计时打点（trap 入口 E2）：结算刚结束的用户态片段，并开启内核态片段。
     ///
-    /// trap 只可能来自 U 态，因此自上次打点以来的这段时间即为用户态执行时间。
+    /// 该打点只对来自 U 态的 trap 成立；`trap_handler` 已把 S 态 trap 判定为内核 bug
+    /// 并 panic，因此自上次打点以来的这段时间确实都是用户态执行时间。
     fn account_trap_entry(&self) {
         let mut inner = self.inner.exclusive_access();
         let current = inner.current_task;
