@@ -8,7 +8,17 @@ SECTIONS
 
     stext = .;
     .text : {
+        /* 入口，必须放在最前面 */
         *(.text.entry)
+        . = ALIGN(4K);
+        /* U态 trampoline 代码 */
+        s_u_trampoline = .;
+        *(.text.u_trampoline);
+        . = ALIGN(4K);
+        /* S态 trampoline 代码 */
+        s_k_trampoline = .;
+        *(.text.k_trampoline);
+        . = ALIGN(4K);
         *(.text .text.*)
     }
 
@@ -30,6 +40,7 @@ SECTIONS
 
     . = ALIGN(4K);
     edata = .;
+    sbss_with_stack = .;
     .bss : {
         *(.bss.stack)
         sbss = .;
@@ -40,10 +51,7 @@ SECTIONS
     . = ALIGN(4K);
     ebss = .;
     ekernel = .;
-
-    ASSERT(ekernel <= APP_BASE_ADDRESS,
-           "kernel image overlaps APP_BASE_ADDRESS; enlarge the gap between kernel and apps")
-
+    
     /DISCARD/ : {
         *(.eh_frame)
         *(.debug*)

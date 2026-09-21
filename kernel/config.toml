@@ -7,23 +7,23 @@
 # 数值配置（十六进制或十进制均可）与字符串配置（如 log_level）在此统一管理。
 
 # 内核加载基址
-base_address = 0x40200000
+k_base_address = 0x40200000
 # mtime 寄存器递增频率（单位：Hz），用于计算时间
-# 根据TRM，mtime寄存器时钟来自 osc时钟/6 ，而 osc时钟为24MHz，
+# 根据JH7110 TRM，mtime寄存器时钟来自 osc时钟/6 ，而 osc时钟为24MHz，
 # 因此 mtime 寄存器频率为 4MHz
 mtime_frequency = 4000000
-# 内核支持的最大应用程序数量
-max_app_num = 16
-# 应用程序基址（须与 usr/build.rs 的 APP_BASE_ADDRESS 保持一致）
-app_base_address = 0x40400000
-# 应用程序最大大小（字节）
-app_max_size = 0x200000
-# 内核栈大小（字节）
-kernel_stack_size = 0x2000
-# 用户栈大小（字节）
-user_stack_size = 0x2000
-# 内核时钟中断周期（单位：微秒）
+# 内核栈大小（字节，必须与页大小对齐，默认 8KB）
+k_stack_size = 0x2000
+# 用户栈大小（字节，必须与页大小对齐，默认 8KB）
+u_stack_size = 0x2000
+# 内核时钟中断周期（单位：微秒，默认 10000）
 stimer_interval = 10000
+# 内核堆大小（2^k_heap_size_shift 字节，默认 1MB）
+k_heap_size_shift = 20
+# 标准页大小（2^page_size_shift 字节，默认 4KB）
+page_size_shift = 12
+# 内存基址
+mem_base_address = 0x40000000
 
 # 日志等级过滤：低于该等级的日志在编译期被折叠剔除，不产生运行时开销，
 # 其字符串字面量也不会进入 kernel.bin。

@@ -9,10 +9,22 @@
 //! 板卡等"开关类"配置使用 Cargo features（见 Cargo.toml），
 //! 在 build.rs 中可通过 CARGO_FEATURE_<NAME> 环境变量感知。
 
-use std::env;
-use std::fs;
-use std::path::Path;
-use std::path::PathBuf;
+use std::{env, fs, path::Path, path::PathBuf};
+
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct Config {
+    k_base_address: usize,
+    mtime_frequency: usize,
+    u_stack_size: usize,
+    k_stack_size: usize,
+    stimer_interval: usize,
+    k_heap_size_shift: usize,
+    page_size_shift: usize,
+    mem_base_address: usize,
+    log_level: String,
+}
 
 /// 简单的 FNV-1a 哈希，用于对 linker.lds 内容做摘要。
 fn fnv1a(data: &[u8]) -> u64 {
@@ -24,90 +36,106 @@ fn fnv1a(data: &[u8]) -> u64 {
     hash
 }
 
-/// 解析 config.toml 中形如 `key = value` 的整型配置项。
-/// 返回 (key, 十进制或十六进制整数值) 列表；# 开头的行为注释。
-fn parse_int_configs(path: &Path) -> Result<Vec<(String, u64)>, String> {
-    let content =
-        fs::read_to_string(path).map_err(|e| format!("读取 {} 失败: {}", path.display(), e))?;
-    let mut out = Vec::new();
-    for (lineno, raw) in content.lines().enumerate() {
-        let line = raw.split('#').next().unwrap_or("").trim();
-        if line.is_empty() {
-            continue;
+fn gen_config_constants(configs: &Config, out_path: &Path) {
+    let mut content = Vec::new();
+
+    content.push(String::from(
+        "// 由 build.rs 从 config.toml 自动生成，请勿手动修改",
+    ));
+    content.push(format!(
+        r#"/// 内存基地址
+pub const MEM_BASE_ADDRESS: usize = 0x{:x};"#,
+        configs.mem_base_address
+    ));
+    content.push(String::from(
+        r#"/// 内存大小（字节，默认 1GB）
+/// 说明：JH7110支持2/4/8GB三种内存规格，实际内存大小由EEPROM里的SerialID决定，
+/// 或通过设备树文件的memory节点指定。此处我们先不动态设置内存大小，
+/// 而是在编译期固定为1GB，后续可考虑通过设备树文件动态设置。
+pub const MEM_SIZE: usize = 0x4000_0000; // 1GB
+/// 内存结束地址（字节）
+pub const MEM_END_ADDR: usize = MEM_BASE_ADDRESS + MEM_SIZE;
+/// 跳板页的虚拟地址
+pub const TRAMPOLINE: usize = usize::MAX - PAGE_SIZE + 1;
+/// 中断上下文的虚拟地址
+pub const TRAP_CONTEXT: usize = TRAMPOLINE - PAGE_SIZE;"#,
+    ));
+    content.push(format!(
+        r#"/// 内核基地址
+pub const K_BASE_ADDRESS: usize = 0x{:x};"#,
+        configs.k_base_address
+    ));
+    content.push(format!(
+        r#"/// 时钟频率（Hz）
+pub const MTIME_FREQUENCY: usize = {};"#,
+        configs.mtime_frequency
+    ));
+    content.push(format!(
+        r#"/// 用户栈大小（字节）
+pub const U_STACK_SIZE: usize = {};"#,
+        configs.u_stack_size
+    ));
+    content.push(format!(
+        r#"/// 内核栈大小（字节）
+pub const K_STACK_SIZE: usize = {};
+/// 内核栈虚拟基址（首个任务的栈顶 = TRAP_CONTEXT，后续任务依次向下排布）
+/// 注意：必须引用 TRAP_CONTEXT（页对齐），不能写成 usize::MAX - PAGE_SIZE，
+/// 后者会落在 TRAP_CONTEXT 页的页尾字节上，导致栈顶未对齐并侵占该页。
+pub const K_STACK_V_BASE: usize = TRAP_CONTEXT;"#,
+        {
+            assert!(
+                configs
+                    .k_base_address
+                    .is_multiple_of(1 << configs.page_size_shift)
+            );
+            configs.k_stack_size
         }
-        let Some((key, val)) = line.split_once('=') else {
-            return Err(format!(
-                "{}:{} 不是合法的 key = value 配置",
-                path.display(),
-                lineno + 1
-            ));
-        };
-        let key = key.trim();
-        let val = val.trim();
-        // 带引号的是字符串配置（如 log_level），不属于整数配置，跳过
-        if val.starts_with('"') {
-            continue;
+    ));
+    content.push(format!(
+        r#"/// 定时器中断间隔（单位：微秒）
+pub const STIMER_INTERVAL: usize = {};"#,
+        configs.stimer_interval
+    ));
+    content.push(format!(
+        r#"/// 内核堆大小（位数）
+pub const K_HEAP_SIZE_SHIFT: usize = {};
+/// 内核堆大小（2^K_HEAP_SIZE_SHIFT 字节）
+pub const K_HEAP_SIZE: usize = 1 << K_HEAP_SIZE_SHIFT;"#,
+        configs.k_heap_size_shift
+    ));
+    content.push(format!(
+        r#"/// 页大小（位数）
+pub const PAGE_SIZE_SHIFT: usize = {};
+/// 页大小（字节）
+pub const PAGE_SIZE: usize = 1 << PAGE_SIZE_SHIFT;"#,
+        configs.page_size_shift
+    ));
+    content.push(format!(
+        r#"/// 日志等级
+pub const LOG_LEVEL_NAME: &str = "{}";"#,
+        {
+            let loer_case_level = configs.log_level.to_lowercase();
+            if ["error", "warn", "info", "debug", "trace"].contains(&loer_case_level.as_str()) {
+                loer_case_level
+            } else {
+                "info".to_string()
+            }
         }
-        let v = if let Some(hex) = val.strip_prefix("0x").or_else(|| val.strip_prefix("0X")) {
-            u64::from_str_radix(hex, 16)
-                .map_err(|_| format!("{}:{} 十六进制值非法", path.display(), lineno + 1))?
-        } else {
-            val.parse::<u64>()
-                .map_err(|_| format!("{}:{} 整数值非法", path.display(), lineno + 1))?
-        };
-        out.push((key.to_string(), v));
-    }
-    Ok(out)
+    ));
+
+    fs::write(out_path, content.join("\n")).expect("写入 generated.rs 失败");
 }
 
-/// 解析并校验 config.toml 中的 `log_level` 字符串配置。
-///
-/// 该键控制日志等级过滤，取值范围限定为 error|warn|info|debug|trace；
-/// 未配置时回退到 "debug"（与加入过滤前的可见输出保持一致）。非法值直接报错。
-fn parse_log_level(path: &Path) -> Result<String, String> {
-    const VALID: [&str; 5] = ["error", "warn", "info", "debug", "trace"];
-
-    let content =
-        fs::read_to_string(path).map_err(|e| format!("读取 {} 失败: {}", path.display(), e))?;
-    for (lineno, raw) in content.lines().enumerate() {
-        let line = raw.split('#').next().unwrap_or("").trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Some((key, val)) = line.split_once('=') else {
-            continue;
-        };
-        if key.trim() != "log_level" {
-            continue;
-        }
-        let val = val.trim();
-        let Some(v) = val.strip_prefix('"').and_then(|s| s.strip_suffix('"')) else {
-            return Err(format!(
-                "{}:{} log_level 的值必须用双引号括起来，例如 log_level = \"debug\"",
-                path.display(),
-                lineno + 1
-            ));
-        };
-        if !VALID.contains(&v) {
-            return Err(format!(
-                "{}:{} log_level = \"{}\" 非法，可选：error | warn | info | debug | trace",
-                path.display(),
-                lineno + 1,
-                v
-            ));
-        }
-        return Ok(v.to_string());
-    }
-    Ok("debug".to_string())
-}
-
-/// 获取用户程序产物目录（默认 ../build/usr）下的 `.bin` 列表，按文件名前缀的数字排序。
-fn get_usr_apps(path: &Path, max_app_num: usize) -> Result<Vec<PathBuf>, String> {
+/// 获取用户程序产物目录（默认 ../build/usr）下的elf文件列表，按文件名前缀的数字排序。
+fn get_usr_apps(path: &Path) -> Result<Vec<PathBuf>, String> {
     let mut apps = fs::read_dir(path)
         .map_err(|e| format!("读取 {} 失败: {}", path.display(), e))?
+        .filter(|f_res| match f_res {
+            // 只读取文件类型为普通文件的条目，避免目录/链接/设备文件等干扰
+            Ok(f) => f.file_type().map(|ft| ft.is_file()).unwrap_or(false),
+            Err(_) => false,
+        })
         .filter_map(|f_res| f_res.ok().map(|f| f.path()))
-        // 只认 .bin，避免把目录或编辑器临时文件误当成用户程序
-        .filter(|p| p.extension().is_some_and(|ext| ext == "bin"))
         .collect::<Vec<_>>();
 
     // 将apps按文件名前缀的数字排序
@@ -128,11 +156,6 @@ fn get_usr_apps(path: &Path, max_app_num: usize) -> Result<Vec<PathBuf>, String>
     let app_nums = apps.len();
     if app_nums < 1 {
         return Err("未找到任何用户程序".to_string());
-    } else if app_nums > max_app_num {
-        return Err(format!(
-            "用户程序数量过多（{}），请确保不超过 {} 个",
-            app_nums, max_app_num
-        ));
     }
 
     Ok(apps)
@@ -214,62 +237,19 @@ fn main() {
         std::process::exit(1);
     }
 
-    // ---- 读取 log_level（字符串配置，缺省 debug）----
-    // 先于整数配置解析：这样未加引号的写法能命中更明确的报错提示
-    let log_level = match parse_log_level(&cfg_path) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("build.rs 错误: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    // ---- 读取 config.toml ----
-    let configs = match parse_int_configs(&cfg_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("build.rs 错误: {e}");
-            std::process::exit(1);
-        }
-    };
-    let get = |key: &str| configs.iter().find(|(k, _)| k == key).map(|(_, v)| *v);
-
-    let base_address = get("base_address").unwrap_or(0x4020_0000);
-    let app_base_address = get("app_base_address").unwrap_or(0x4040_0000);
+    let toml_str = fs::read_to_string(&cfg_path)
+        .unwrap_or_else(|e| panic!("读取 {} 失败: {}", cfg_path.display(), e));
+    let configs: Config = toml::from_str(&toml_str).unwrap();
 
     // ---- 分发 1: 注入链接脚本宏（rust-lld 的 -defsym 机制）----
-    println!("cargo:rustc-link-arg=-defsym=BASE_ADDRESS=0x{base_address:x}");
-    // 供 linker.lds 中的 ASSERT 使用，确保内核镜像不会压到应用区
-    println!("cargo:rustc-link-arg=-defsym=APP_BASE_ADDRESS=0x{app_base_address:x}");
+    println!(
+        "cargo:rustc-link-arg=-defsym=BASE_ADDRESS=0x{:x}",
+        configs.k_base_address
+    );
 
     // ---- 分发 2: 生成 Rust 常量（Rust 侧与链接脚本共享同一事实来源）----
     let generated = Path::new(&out_dir).join("generated.rs");
-    fs::write(
-        &generated,
-        format!(
-            r#"// 由 build.rs 从 config.toml 自动生成，请勿手动修改
-pub const BASE_ADDRESS: usize = 0x{:x};
-pub const MTIME_FREQUENCY: usize = {};
-pub const USER_STACK_SIZE: usize = {};
-pub const KERNEL_STACK_SIZE: usize = {};
-pub const MAX_APP_NUM: usize = {};
-pub const APP_BASE_ADDRESS: usize = 0x{:x};
-pub const APP_SIZE_LIMIT: usize = 0x{:x};
-pub const STIMER_INTERVAL: usize = {};
-pub const LOG_LEVEL_NAME: &str = "{}";
-"#,
-            base_address,
-            get("mtime_frequency").unwrap_or(4_000_000),
-            get("user_stack_size").unwrap_or(4096 * 2),
-            get("kernel_stack_size").unwrap_or(4096 * 2),
-            get("max_app_num").unwrap_or(16),
-            app_base_address,
-            get("app_max_size").unwrap_or(0x200_000),
-            get("stimer_interval").unwrap_or(10_000),
-            log_level
-        ),
-    )
-    .expect("写入 generated.rs 失败");
+    gen_config_constants(&configs, &generated);
 
     // ---- 分发 3: 让 cargo 感知 linker.lds 的内容变更 ----
     // 链接脚本通过 -Clink-arg=-T... 传给链接器，cargo 的 dep-info 不会追踪它；
@@ -280,7 +260,7 @@ pub const LOG_LEVEL_NAME: &str = "{}";
     }
 
     // ---- 分发 4: 生成 usr_linker.S，把用户程序链入内核 ----
-    let usr_apps = match get_usr_apps(&usr_prog_path, get("max_app_num").unwrap_or(16) as usize) {
+    let usr_apps = match get_usr_apps(&usr_prog_path) {
         Ok(apps) => apps,
         Err(e) => {
             eprintln!("build.rs 错误: {e}");

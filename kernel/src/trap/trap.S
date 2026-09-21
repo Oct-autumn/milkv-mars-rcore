@@ -1,3 +1,12 @@
+GP_OFFSET = 0*8
+SSTATUS_OFFSET = 32*8
+SEPC_OFFSET = 33*8
+FP_OFFSET = (32 + 2)*8
+FCSR_OFFSET = (32 + 2 + 32)*8
+K_SATP_OFFSET = (32 + 2 + 32 + 1)*8
+K_SP_OFFSET = (32 + 2 + 32 + 2)*8
+TRAP_HANDLER_OFFSET = (32 + 2 + 32 + 3)*8
+
 .altmacro
 /* 定义一个宏：用于保存通用寄存器 */
 .macro SAVE_GP n
@@ -5,7 +14,7 @@
 .endm
 /* 定义一个宏：用于保存浮点寄存器 */
 .macro SAVE_FP n
-    fsd f\n, (32 + 2 + \n)*8(sp)
+    fsd f\n, (FP_OFFSET + \n*8)(sp)
 .endm
 
 /* 定义一个宏：用于加载通用寄存器 */
@@ -14,41 +23,23 @@
 .endm
 /* 定义一个宏：用于加载浮点寄存器 */
 .macro LOAD_FP n
-    fld f\n, (32 + 2 + \n)*8(sp)
+    fld f\n, (FP_OFFSET + \n*8)(sp)
 .endm
 
-# TrapContext 结构体的大小为 32个通用寄存器 + sstatus + sepc + 32个浮点寄存器 + fcsr = 67 个寄存器
-TRAP_CONTEXT_SIZE = 67*8  # 每个寄存器占 8 字节
-
-# sstatus.SPP（Supervisor Previous Privilege）位：trap 前的特权级，bit 8 为 1 表示来自 S 态
-.set SSTATUS_SPP, 0x100
-
-    .section .text
-    .globl __alltraps
-    .globl __restore
+    .section .text.u_trampoline
+    .globl __u_alltraps
+    .globl __u_restore
     .align 2
 
 /*
- * Trap 进入内核态
+ * U态 Trap 进入 S态
  * 根据我们在 init() 中设置的中断向量（stvec），当发生中断或异常时，CPU 会自动跳转到此标签处
  */
-__alltraps:
-    # 来源判别：约定 sscratch 在 U 态运行期间保存"当前任务的内核栈顶"，在内核
-    #   （S 态）运行期间固定为 0（由本轮保存完上下文后的 `csrw sscratch, zero`
-    #   建立并维持）。于是交换后 sp 非 0 即来自 U 态、为 0 即来自 S 态。
-    #   之所以用 sp 的零/非零而不是 sstatus.SPP 判别：trap 刚进入时 32 个通用
-    #   寄存器全部尚未保存，没有 scratch 寄存器可供 csrr 读出 SPP；而 sp 自身
-    #   可以直接用 bnez 判断，整个过程不破坏任何寄存器。
+__u_alltraps:
+    # 此处只有U态Trap会进入。应用程序第一次运行时 在__u_restore中将sscratch置为其地址空间中用来存
+    # 放中断上下文的一处常数地址（见 app_init_context() 和 __u_restore）
     csrrw sp, sscratch, sp
-    bnez sp, .Ltrap_save
-    # 来自 S 态：把 sp 换回来，沿用被中断时的内核栈（不交换）。若在此处交换，
-    #   TrapContext 会被压到用户栈上，或覆盖外层 trap 的 TrapContext。
-    csrrw sp, sscratch, sp  # sp = 被中断的内核 sp，sscratch = 0
-    csrw sscratch, sp       # 与 U 态路径统一为“sscratch = 被中断的 sp”
-
-.Ltrap_save:
-    # 分配一个 TrapContext 结构体的空间
-    addi sp, sp, -TRAP_CONTEXT_SIZE
+    # 交换sp与sscratch后，sp->*TrapContext，sscratch->用户栈顶
 
     SAVE_GP 1  # 保存 ra
     # 跳过 sp(x2)，此时它的内容指向了内核栈，我们稍后保存它原来的内容（在sscratch中）
@@ -76,8 +67,8 @@ __alltraps:
     # 保存 sstatus 和 sepc （中断前的特权级状态和程序计数器）
     csrr t0, sstatus
     csrr t1, sepc
-    sd t0, 32*8(sp)  # 保存 sstatus
-    sd t1, 33*8(sp)  # 保存 sepc
+    sd t0, SSTATUS_OFFSET(sp)  # 保存 sstatus
+    sd t1, SEPC_OFFSET(sp)  # 保存 sepc
 
     # 保存被中断的 sp（来自 U 态时为用户 sp，来自 S 态时为内核 sp）。
     # 两条路径都被统一成"sscratch 持有被中断 sp"，故此处无需分支。
@@ -86,54 +77,49 @@ __alltraps:
 
     # 保存 fcsr
     csrr t3, fcsr
-    sd t3, (32 + 2 + 32)*8(sp)
+    sd t3, FCSR_OFFSET(sp)
 
-    # 建立"内核期 sscratch == 0"不变量：此后直到 __restore 返回用户态，sscratch
-    # 一直为 0，供嵌套 trap 的 __alltraps 判别来源。
-    csrw sscratch, zero
+    # 加载内核页表根物理页号到 t0 暂存
+    ld t0, K_SATP_OFFSET(sp)
+    # 加载trap_handler地址到 t1 暂存
+    ld t1, TRAP_HANDLER_OFFSET(sp)
 
-    # 现在我们已经保存了所有需要的寄存器，接下来调用 Rust 的 trap_handler 函数
-    mv a0, sp  # 将 TrapContext 的地址传递给 trap_handler
-    call trap_handler
+    # 转到内核栈（SAFE: 先读后写）
+    ld sp, K_SP_OFFSET(sp)
+    # 切换到内核页表
+    csrw satp, t0
+    # 刷新TLB
+    sfence.vma
+
+    # 跳转到内核 trap_handler
+    jr t1
 
 /*
- * Trap 退出内核态
+ * U态 Trap 退出 S态
+ *
+ * 由 trap_return() 调用：
+ * - a0: TrapContext 的地址
+ * - a1: 应用程序的satp
  */
-__restore:
-    # trap_handler 返回后，我们需要恢复寄存器的值
-    
-    # 在多道程序OS中，不再需要这条指令
-    # 因为 __restore 不再是以函数形式调用，它的执行只有两种场景：
-    # 1. trap_handler 返回时：此时sp仍然指向TrapContext的地址不变，该指令无用；
-    # 2. 执行首个应用程序时：从TaskContext恢复寄存器时，sp已经被正确的指向内核栈地址
-    #   （其中有init_app_cx创建的初始TrapContext），该指令无用。
-    #mv sp, a0  # trap_handler 返回时，a0 中保存了 TrapContext 的地址
+__u_restore:    
+    # 恢复应用程序的页表
+    csrw satp, a1
+    sfence.vma
+
+    # 恢复 sscratch，指向 TrapContext
+    csrw sscratch, a0
+    # sp 指向 TrapContext，开始恢复
+    mv sp, a0
 
     # 取 sstatus、sepc，并用 t3 记录本次 trap 的来源特权级（SPP）：
     #   0 表示来自 U 态，非 0 表示来自 S 态。
     # 这里必须用 TrapContext 中的 sstatus 副本，而不能读硬件 sstatus：嵌套 trap
     # 返回时硬件 SPP 会被内层 sret 改写，只有这里的副本始终是本次 trap 的来源。
-    ld t0, 32*8(sp)  # 取 sstatus
-    ld t1, 33*8(sp)  # 取 sepc
-    andi t3, t0, SSTATUS_SPP
+    ld t0, SSTATUS_OFFSET(sp)  # 取 sstatus
+    ld t1, SEPC_OFFSET(sp)  # 取 sepc
     csrw sstatus, t0
     csrw sepc, t1
 
-    # 按来源设定 sscratch，恢复相应不变量：
-    #   返回 U 态 -> sscratch = 内核栈顶（= 当前 sp + TRAP_CONTEXT_SIZE）
-    #   返回 S 态 -> sscratch 继续置 0
-    bnez t3, .Lrestore_to_s
-    addi t0, sp, TRAP_CONTEXT_SIZE
-    csrw sscratch, t0
-    j .Lrestore_common
-
-.Lrestore_to_s:
-    # 当前尚不可达：S 态 trap 一律被 trap_handler 判为内核 bug 并 panic，不会返回。
-    # 保留此分支是为了维持 __restore 的语义完整——将来若实现内核抢占，返回 S 态
-    # 时必须继续维持"内核期 sscratch == 0"的不变量。
-    csrw sscratch, zero
-
-.Lrestore_common:
     # 恢复浮点寄存器
     .set n, 0
     .rept 32
@@ -141,7 +127,7 @@ __restore:
         .set n, n+1
     .endr
     # 恢复 fcsr
-    ld t3, (32 + 2 + 32)*8(sp)
+    ld t3, FCSR_OFFSET(sp)
     csrw fcsr, t3
 
     LOAD_GP 1  # 恢复 ra
@@ -160,3 +146,14 @@ __restore:
     # （ld 的地址计算在写 rd 之前完成，故 ld sp, 2*8(sp) 合法。）
     ld sp, 2*8(sp)
     sret  # 返回（目标特权级由恢复的 sstatus.SPP 决定）
+
+    .section .text.k_trampoline
+    .globl __k_alltraps
+    .globl __k_restore
+    .align 2
+
+__k_alltraps:
+__k_restore:
+    # TODO: 尚未实现的 S态 中断处理
+    wfi
+    j __k_alltraps

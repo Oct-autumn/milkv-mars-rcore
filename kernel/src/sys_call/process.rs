@@ -1,11 +1,17 @@
-use core::mem::{align_of, size_of};
+use core::{cmp::min, mem::size_of};
+
+use alloc::vec::Vec;
 
 use crate::{
-    app_loader::{get_app_base, get_user_stack_base},
-    config::{APP_SIZE_LIMIT, USER_STACK_SIZE},
+    config::PAGE_SIZE,
     error, info,
-    task::{exit_current_task_and_run_next, get_current_task, suspend_current_task_and_run_next},
+    mem::{MemoryMapPermission, VirtualAddress, VirtualPageNumber},
+    task::{
+        exit_current_task_and_run_next, get_current_task, suspend_current_task_and_run_next,
+        translate_current_va,
+    },
     time::RunTime,
+    utils::Range,
     warn,
 };
 
@@ -49,33 +55,56 @@ pub struct TimeVal {
 /// - _tz: 时区信息，目前未使用
 /// - 返回值: 成功返回 0；ts 非法（空/越界/未对齐）返回 -1
 pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
-    let current_task_id = get_current_task();
-    let u_stack_base = get_user_stack_base(current_task_id);
-    let app_base = get_app_base(current_task_id);
-
-    // 与 sys_write 保持一致的边界检查：校验整个 [ts, ts + size_of::<TimeVal>())
-    // 落在当前任务的用户栈或应用区内。当前无 MMU（satp=0），内核与用户共享同一
-    // 物理地址空间，这是唯一可用的隔离手段，否则用户可传入内核地址覆写内核数据。
-    let ts_start = ts as usize;
-    let Some(ts_end) = ts_start.checked_add(size_of::<TimeVal>()) else {
-        error!("sys_get_time: pointer overflow: {ts:p}");
-        return -1;
-    };
-    let in_user_stack = ts_start >= u_stack_base - USER_STACK_SIZE && ts_end <= u_stack_base;
-    let in_app = ts_start >= app_base && ts_end <= app_base + APP_SIZE_LIMIT;
-    // TimeVal 由两个 usize 组成，未对齐的裸指针写入属未定义行为，需一并拒绝。
-    let aligned = ts_start.is_multiple_of(align_of::<TimeVal>());
-    if !((in_user_stack || in_app) && aligned) {
-        error!("sys_get_time: invalid TimeVal pointer: {ts:p}");
-        return -1;
-    }
+    let ts_addr = ts as usize;
+    let ts_start_va = VirtualAddress::from(ts_addr);
+    let ts_end_va = VirtualAddress::from(ts_addr.saturating_add(size_of::<TimeVal>()));
 
     let time = crate::time::get_time();
-    unsafe {
-        *ts = TimeVal {
-            sec: time / 1_000_000,
-            usec: time % 1_000_000,
-        };
+    let t_val = TimeVal {
+        sec: time / 1_000_000,
+        usec: time % 1_000_000,
+    };
+    let t_val_bytes = unsafe {
+        core::slice::from_raw_parts(&t_val as *const TimeVal as *const u8, size_of::<TimeVal>())
+    };
+
+    // 检查每个页是否在当前任务的用户栈或应用区内
+    // 顺便将每个页的虚拟地址翻译为物理地址，以便后续使用
+    let vpn_range =
+        Range::<VirtualPageNumber>::new(ts_start_va.floor_page(), ts_end_va.ceil_page(), |va| {
+            va + VirtualPageNumber::from(1)
+        });
+    let mut buf_ppn_list = Vec::new();
+
+    for vpn in vpn_range {
+        let va = vpn.into();
+        if let Some(pa) =
+            translate_current_va(va, Some(MemoryMapPermission::U | MemoryMapPermission::W))
+        {
+            buf_ppn_list.push(pa.floor_page());
+        } else {
+            error!(
+                "sys_get_time: *ts is not in user space: {:#x}",
+                usize::from(va)
+            );
+            return -1;
+        }
+    }
+
+    let mut page_offset = ts_start_va.page_offset();
+    let mut left_len = size_of::<TimeVal>();
+
+    for ppn in buf_ppn_list {
+        let write_len = min(PAGE_SIZE - page_offset, left_len);
+        let slice = &mut ppn.as_raw_page()[page_offset..page_offset + write_len];
+
+        slice.copy_from_slice(
+            &t_val_bytes
+                [size_of::<TimeVal>() - left_len..size_of::<TimeVal>() - left_len + write_len],
+        );
+
+        page_offset = 0;
+        left_len -= write_len;
     }
     0
 }

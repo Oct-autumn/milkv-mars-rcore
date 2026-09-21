@@ -19,6 +19,13 @@ pub fn print(args: fmt::Arguments) {
     Stdout.write_fmt(args).unwrap();
 }
 
+#[allow(unused)]
+pub fn write_bytes(bytes: &[u8]) {
+    for &b in bytes {
+        sbi_call::console_putbyte(b);
+    }
+}
+
 #[macro_export]
 macro_rules! print {
     ($fmt: literal $(, $($arg: tt)+)?) => {

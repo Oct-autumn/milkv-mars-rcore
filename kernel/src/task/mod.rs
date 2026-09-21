@@ -1,22 +1,25 @@
 mod context;
 mod task_info;
 
+use alloc::vec::Vec;
 use lazy_static::lazy_static;
 use riscv::register::sie;
 use sbi::system_reset::{ResetReason, ResetType};
 
+use self::{
+    context::TaskContext,
+    task_info::{TaskControlBlock, TaskStatus},
+};
 use crate::{
-    app_loader::{get_num_app, init_app_cx},
-    config::{self, MAX_APP_NUM},
+    app_loader::{get_app_data, get_num_app},
+    config::{self},
     debug, info,
+    mem::{MemoryMapPermission, PhysicalAddress, VirtualAddress},
     sbi_call::shutdown,
     sync::UPSafeCell,
-    task::{
-        context::TaskContext,
-        task_info::{TaskControlBlock, TaskStatus},
-    },
     time::{get_time, set_next_timer},
     trace,
+    trap::TrapContext,
 };
 
 /// 任务管理器
@@ -27,7 +30,7 @@ struct TaskManager {
 /// 任务管理器内部结构体（可变数据）
 struct TaskManagerInner {
     current_task: usize,
-    tasks: [TaskControlBlock; MAX_APP_NUM],
+    tasks: Vec<TaskControlBlock>,
 }
 
 impl TaskManager {
@@ -68,6 +71,13 @@ impl TaskManager {
         let tcb = &inner.tasks[inner.current_task];
         let now = get_time();
         (tcb.u_run_time, tcb.k_run_time + (now - tcb.last_enter_time))
+    }
+
+    /// 读取当前任务的 satp 寄存器值
+    fn get_current_satp(&self) -> usize {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].get_satp().bits()
     }
 
     fn init(&self) {
@@ -181,19 +191,13 @@ impl TaskManager {
 lazy_static! {
     static ref TASK_MANAGER: TaskManager = {
         let num_app = get_num_app();
-        let mut tasks = [TaskControlBlock {
-            id: 0,
-            status: TaskStatus::UnInit,
-            cx: TaskContext::zero_init(),
-            u_run_time: 0,
-            k_run_time: 0,
-            last_enter_time: 0,
-        }; MAX_APP_NUM];
-        for (i, tcb) in tasks.iter_mut().enumerate().take(num_app) {
-            tcb.id = i;
-            tcb.cx = TaskContext::goto_restore(init_app_cx(i));
-            tcb.status = TaskStatus::Ready;
+        let mut tasks = Vec::new();
+
+        // 初始化TCB列表
+        for i in 0..num_app {
+            tasks.push(TaskControlBlock::new(get_app_data(i),i));
         }
+
         TaskManager {
             inner: unsafe {
                 UPSafeCell::new(TaskManagerInner {
@@ -209,16 +213,23 @@ pub fn get_current_task() -> usize {
     TASK_MANAGER.get_current_task()
 }
 
-pub fn account_trap_entry() {
-    TASK_MANAGER.account_trap_entry();
+pub fn get_current_satp() -> usize {
+    TASK_MANAGER.get_current_satp()
 }
 
-pub fn account_trap_exit() {
-    TASK_MANAGER.account_trap_exit();
+pub fn get_current_trap_cx() -> &'static mut TrapContext {
+    let inner = TASK_MANAGER.inner.exclusive_access();
+    inner.tasks[inner.current_task].get_trap_cx()
 }
 
-pub fn current_task_times() -> (usize, usize) {
-    TASK_MANAGER.current_task_times()
+pub fn translate_current_va(
+    va: VirtualAddress,
+    perm_check: Option<MemoryMapPermission>,
+) -> Option<PhysicalAddress> {
+    let inner = TASK_MANAGER.inner.exclusive_access();
+    inner.tasks[inner.current_task]
+        .memory_set
+        .translate(va, perm_check)
 }
 
 pub fn run_first_task() -> ! {
@@ -232,4 +243,18 @@ pub fn suspend_current_task_and_run_next() {
 
 pub fn exit_current_task_and_run_next() -> ! {
     TASK_MANAGER.exit_current_task()
+}
+
+/* 统计任务运行时间 */
+
+pub fn account_trap_entry() {
+    TASK_MANAGER.account_trap_entry();
+}
+
+pub fn account_trap_exit() {
+    TASK_MANAGER.account_trap_exit();
+}
+
+pub fn current_task_times() -> (usize, usize) {
+    TASK_MANAGER.current_task_times()
 }

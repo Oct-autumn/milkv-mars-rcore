@@ -1,7 +1,6 @@
-use sbi::system_reset::{ResetReason, ResetType};
+use core::{arch::asm, panic::PanicInfo};
 
-use crate::{error, sbi_call::shutdown, stack_trace::print_stack_trace};
-use core::panic::PanicInfo;
+use crate::{error, stack_trace::print_stack_trace};
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
@@ -17,5 +16,9 @@ fn panic(info: &PanicInfo) -> ! {
     unsafe {
         print_stack_trace();
     }
-    shutdown(ResetType::Shutdown, ResetReason::SystemFailure);
+    // 该平台经 SBI shutdown 实际表现为重启，会冲刷串口现场；
+    // 故 panic 后直接 wfi 挂起，便于完整保留并读取日志。
+    loop {
+        unsafe { asm!("wfi") };
+    }
 }

@@ -1,6 +1,6 @@
 use core::arch::global_asm;
 
-use crate::linker_symbol_addr;
+use crate::{linker_symbol_addr, trap::u_trap_return};
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -24,12 +24,9 @@ impl TaskContext {
     }
 
     /// 创建一个用于恢复的 TaskContext
-    pub fn goto_restore(k_stack_ptr: usize) -> Self {
-        unsafe extern "C" {
-            fn __restore();
-        }
+    pub fn goto_trap_return(k_stack_ptr: usize) -> Self {
         TaskContext {
-            ra: linker_symbol_addr!(__restore),
+            ra: linker_symbol_addr!(u_trap_return),
             sp: k_stack_ptr,
             s: [0; 12],
         }

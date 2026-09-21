@@ -1,11 +1,13 @@
 #![no_std]
 #![no_main]
+#![feature(alloc_error_handler)]
 
 mod app_loader;
 mod config;
 mod console;
 mod lang_items;
 mod log;
+mod mem;
 mod sbi_call;
 mod stack_trace;
 mod sync;
@@ -13,8 +15,16 @@ mod sys_call;
 mod task;
 mod time;
 mod trap;
+mod utils;
+
+#[macro_use]
+extern crate alloc;
+#[macro_use]
+extern crate bitflags;
 
 use core::arch::global_asm;
+
+use riscv::register::sstatus;
 
 global_asm!(include_str!("start.S"));
 
@@ -30,13 +40,13 @@ fn main(hartid: usize, dtb_addr: usize) -> ! {
     // 便于区分“该等级没有日志触发”与“日志被等级过滤”）
     println!("Mars-rCore log level: {}", config::LOG_LEVEL_NAME);
 
+    // 初始化内核堆
+    mem::init();
+
     info!("\n============ Mars-rCore ============");
-    info!("BASE_ADDRESS = {:#x}", config::BASE_ADDRESS);
+    info!("BASE_ADDRESS = {:#x}", config::K_BASE_ADDRESS);
     info!("Boot HartID = {}, DTB Address = {:#x}", hartid, dtb_addr);
 
-    trap::init();
-
-    app_loader::load_apps();
     task::run_first_task();
 }
 
@@ -53,10 +63,8 @@ fn clear_bss() {
         safe fn ebss();
     }
     // 显式启用硬浮点单元
-    let mut sstatus = riscv::register::sstatus::read();
-    sstatus.set_fs(riscv::register::sstatus::FS::Initial);
     unsafe {
-        riscv::register::sstatus::write(sstatus);
+        sstatus::set_fs(sstatus::FS::Initial);
     }
 
     (linker_symbol_addr!(sbss)..linker_symbol_addr!(ebss))
