@@ -6,11 +6,15 @@ use riscv::register::satp::Satp;
 use xmas_elf::ElfFile;
 
 use crate::{
-    config::{MEM_END_ADDR, PAGE_SIZE, PAGE_SIZE_SHIFT, TRAMPOLINE, TRAP_CONTEXT, U_STACK_SIZE},
+    config::{
+        K_V_MEM_OFFSET, MEM_END_ADDR, PAGE_SIZE, PAGE_SIZE_SHIFT, TRAMPOLINE, TRAP_CONTEXT,
+        U_STACK_SIZE,
+    },
     info, linker_symbol_addr,
     mem::{
         PhysicalAddress,
         addr::{PhysicalPageNumber, VirtualAddress, VirtualPageNumber},
+        asid::{ASID_ALLOCATOR, Asid, asid_generation},
         frame::{FrameTracker, alloc_frame},
         page_table::{PTEFlags, PageTable},
     },
@@ -33,6 +37,7 @@ bitflags! {
         const W = 1 << 2; // Write
         const X = 1 << 3; // Execute
         const U = 1 << 4; // User
+        const G = 1 << 5; // Global
     }
 }
 
@@ -88,8 +93,8 @@ impl MemoryMapArea {
     fn map_one(&mut self, pt: &mut PageTable, vpn: VirtualPageNumber) {
         let ppn = match self.map_type {
             MemoryMapType::Identical => {
-                // 直接映射，虚拟页号等于物理页号
-                PhysicalPageNumber::from(usize::from(vpn))
+                // 高半区偏移直接映射，ppn = vpn - (K_V_MEM_OFFSET >> 12)
+                PhysicalPageNumber::from(usize::from(vpn) - (K_V_MEM_OFFSET >> PAGE_SIZE_SHIFT))
             }
             MemoryMapType::Framed => {
                 // 间接映射，需要分配物理页帧
@@ -185,15 +190,19 @@ struct LoadSegment {
 /// 每个区域都具有相同的映射类型和权限。内存集通常用于表示一个进程的虚拟内存空间，
 /// 或者内核的虚拟内存空间。内存集中的每个区域都可以独立地进行映射和权限设置
 pub struct MemorySet {
+    // 页表
     page_table: PageTable,
+    // ASID
+    asid: Option<Asid>,
+    // 映射区段列表
     areas: Vec<MemoryMapArea>,
 }
 
 impl MemorySet {
-    /// 创建一个新的内存集
-    pub fn new() -> Self {
+    fn new_bare() -> Self {
         Self {
             page_table: PageTable::new(),
+            asid: None,
             areas: Vec::new(),
         }
     }
@@ -226,17 +235,52 @@ impl MemorySet {
         );
     }
 
+    /// 将跳板映射到虚拟地址空间
     fn map_trampoline(&mut self) {
+        let trampoline_pa = linker_symbol_addr!(trap::s_u_trampoline) - K_V_MEM_OFFSET;
         self.page_table.map(
             VirtualAddress::from(TRAMPOLINE).into(),
-            PhysicalAddress::from(linker_symbol_addr!(trap::s_u_trampoline)).into(),
-            PTEFlags::R | PTEFlags::X,
+            PhysicalAddress::from(trampoline_pa).into(),
+            PTEFlags::G | PTEFlags::R | PTEFlags::X,
         );
     }
 
+    /// 拷贝内核页表（只拷贝根节点[257]和[510]）到应用程序
+    pub fn copy_kernel_page_table(&mut self) {
+        let k_root_pt = KERNEL_MEM.exclusive_access().get_root_ppn().as_page_table();
+        let self_root_pt = self.get_root_ppn().as_page_table();
+        // 拷贝根节点[257]和[510]
+        // （注意：由于目前只启用了1GB DDR，所以一个根节点即可映射整个DDR，后续若启用更多DDR，则需要在内核段映射时增加更多根节点）
+        self_root_pt[257] = k_root_pt[257]; // 内核段&DirectMap
+        self_root_pt[510] = k_root_pt[510]; // TaskControlBlock::kernel_stack
+    }
+
+    /// 获取内存集的根页表物理页号
+    pub fn get_root_ppn(&self) -> PhysicalPageNumber {
+        self.page_table.root_ppn()
+    }
+
     /// 获取内存集的页表的satp值
-    pub fn get_satp(&self) -> Satp {
-        self.page_table.to_satp()
+    ///
+    /// 如果内存集的ASID已失效，则会触发重分配
+    pub fn satp(&mut self) -> Satp {
+        let asid = match self.asid {
+            Some(ref mut asid) => {
+                // 校验ASID是否是当前代数，如果不是，则需要重新分配ASID
+                if asid.generation != asid_generation() {
+                    // UPSafeCell不可重入，struct Asid的RAII特性会导致死锁
+                    // 故需要分两步：先分配新的ASID，再释放当前的ASID
+                    let new_asid = ASID_ALLOCATOR.exclusive_access().allocate();
+                    *asid = new_asid;
+                }
+                asid.value
+            }
+            None => 0,
+        };
+        // 计算satp值
+        let mut satp_val = self.page_table.satp();
+        satp_val.set_asid(asid);
+        satp_val
     }
 
     /// 将虚拟地址转换为物理地址
@@ -273,7 +317,7 @@ impl MemorySet {
             //safe fn strampoline();
         }
 
-        let mut mem_set = Self::new();
+        let mut mem_set = Self::new_bare();
         // 跳板
         mem_set.map_trampoline();
         // 内核代码段
@@ -282,17 +326,44 @@ impl MemorySet {
             linker_symbol_addr!(stext),
             linker_symbol_addr!(etext)
         );
+        mem_set.push(
+            MemoryMapArea::new(
+                (linker_symbol_addr!(stext)).into(),
+                (linker_symbol_addr!(etext)).into(),
+                MemoryMapType::Identical,
+                MemoryMapPermission::G | MemoryMapPermission::R | MemoryMapPermission::X,
+            ),
+            None,
+        );
         // 内核只读数据段
         info!(
             ".rodata [{:#x}, {:#x})",
             linker_symbol_addr!(srodata),
             linker_symbol_addr!(erodata)
         );
+        mem_set.push(
+            MemoryMapArea::new(
+                (linker_symbol_addr!(srodata)).into(),
+                (linker_symbol_addr!(erodata)).into(),
+                MemoryMapType::Identical,
+                MemoryMapPermission::G | MemoryMapPermission::R,
+            ),
+            None,
+        );
         // 内核数据段
         info!(
             ".data [{:#x}, {:#x})",
             linker_symbol_addr!(sdata),
             linker_symbol_addr!(edata)
+        );
+        mem_set.push(
+            MemoryMapArea::new(
+                (linker_symbol_addr!(sdata)).into(),
+                (linker_symbol_addr!(edata)).into(),
+                MemoryMapType::Identical,
+                MemoryMapPermission::G | MemoryMapPermission::R | MemoryMapPermission::W,
+            ),
+            None,
         );
         // 内核BSS段
         info!(
@@ -302,46 +373,20 @@ impl MemorySet {
         );
         mem_set.push(
             MemoryMapArea::new(
-                (linker_symbol_addr!(stext)).into(),
-                (linker_symbol_addr!(etext)).into(),
-                MemoryMapType::Identical,
-                MemoryMapPermission::R | MemoryMapPermission::X,
-            ),
-            None,
-        );
-        mem_set.push(
-            MemoryMapArea::new(
-                (linker_symbol_addr!(srodata)).into(),
-                (linker_symbol_addr!(erodata)).into(),
-                MemoryMapType::Identical,
-                MemoryMapPermission::R,
-            ),
-            None,
-        );
-        mem_set.push(
-            MemoryMapArea::new(
-                (linker_symbol_addr!(sdata)).into(),
-                (linker_symbol_addr!(edata)).into(),
-                MemoryMapType::Identical,
-                MemoryMapPermission::R | MemoryMapPermission::W,
-            ),
-            None,
-        );
-        mem_set.push(
-            MemoryMapArea::new(
                 (linker_symbol_addr!(sbss_with_stack)).into(),
                 (linker_symbol_addr!(ebss)).into(),
                 MemoryMapType::Identical,
-                MemoryMapPermission::R | MemoryMapPermission::W,
+                MemoryMapPermission::G | MemoryMapPermission::R | MemoryMapPermission::W,
             ),
             None,
         );
+        // 内存直接映射
         mem_set.push(
             MemoryMapArea::new(
                 (linker_symbol_addr!(ekernel)).into(),
-                MEM_END_ADDR.into(),
+                (MEM_END_ADDR + K_V_MEM_OFFSET).into(),
                 MemoryMapType::Identical,
-                MemoryMapPermission::R | MemoryMapPermission::W,
+                MemoryMapPermission::G | MemoryMapPermission::R | MemoryMapPermission::W,
             ),
             None,
         );
@@ -391,8 +436,8 @@ impl MemorySet {
             let end_va = start_va
                 .checked_add(mem_size)
                 .ok_or("segment virtual range overflow")?;
-            // 用户空间从 0 开始，且不含保留高地址区 [TRAP_CONTEXT, usize::MAX]
-            if start_va == 0 || end_va > TRAP_CONTEXT {
+            // 用户段必须在低规范半区，且低于高半区起点（root[256] 的基址）。
+            if start_va == 0 || end_va > (1usize << 38) {
                 return Err("segment address outside user space");
             }
             let start_page = start_va >> PAGE_SIZE_SHIFT;
@@ -437,21 +482,15 @@ impl MemorySet {
             return Err("entry point is not in an executable load segment");
         }
 
-        // 用户栈放在最高段之上，中间留一个 guard page
+        // 找到所有可加载段的最高页号，用于计算用户栈的起始地址
         let max_end_page = segments.iter().map(|s| s.end_page).max().unwrap();
-        let max_end_va = max_end_page << PAGE_SIZE_SHIFT;
-        let user_stack_bottom = max_end_va
-            .checked_add(PAGE_SIZE)
-            .ok_or("user stack bottom overflow")?;
-        let user_stack_top = user_stack_bottom
-            .checked_add(U_STACK_SIZE)
-            .ok_or("user stack top overflow")?;
-        if user_stack_top > TRAP_CONTEXT {
-            return Err("user stack overlaps the reserved high address region");
-        }
 
-        let mut memory_set = Self::new();
+        let mut memory_set = Self::new_bare();
+        // 为内存集分配ASID
+        memory_set.asid = Some(ASID_ALLOCATOR.exclusive_access().allocate());
+        // 将跳板映射到虚拟地址空间，使得应用程序陷入时可以跳转到内核态
         memory_set.map_trampoline();
+        // 将所有可加载段映射到虚拟地址空间，并将段数据拷贝到对应的物理页中
         for s in segments {
             memory_set.push(
                 MemoryMapArea::new(
@@ -463,6 +502,19 @@ impl MemorySet {
                 Some(&elf_data[s.file_off..s.file_off + s.file_size]),
             );
         }
+
+        // 用户栈放在最高段之上，中间留一个 guard page
+        let max_end_va = max_end_page << PAGE_SIZE_SHIFT;
+        let user_stack_bottom = max_end_va
+            .checked_add(PAGE_SIZE)
+            .ok_or("user stack bottom overflow")?;
+        let user_stack_top = user_stack_bottom
+            .checked_add(U_STACK_SIZE)
+            .ok_or("user stack top overflow")?;
+        // 同样的，用户栈不能与保留的高地址区域重叠
+        if user_stack_top > (1usize << 38) {
+            return Err("user stack overlaps the reserved high address region");
+        }
         memory_set.push(
             MemoryMapArea::new(
                 user_stack_bottom.into(),
@@ -472,6 +524,8 @@ impl MemorySet {
             ),
             None,
         );
+
+        // trap context 放在最高地址，trap context 之后的虚拟页不允许访问
         memory_set.push(
             MemoryMapArea::new(
                 TRAP_CONTEXT.into(),

@@ -3,9 +3,8 @@ SSTATUS_OFFSET = 32*8
 SEPC_OFFSET = 33*8
 FP_OFFSET = (32 + 2)*8
 FCSR_OFFSET = (32 + 2 + 32)*8
-K_SATP_OFFSET = (32 + 2 + 32 + 1)*8
-K_SP_OFFSET = (32 + 2 + 32 + 2)*8
-TRAP_HANDLER_OFFSET = (32 + 2 + 32 + 3)*8
+K_SP_OFFSET = (32 + 2 + 32 + 1)*8
+TRAP_HANDLER_OFFSET = (32 + 2 + 32 + 2)*8
 
 .altmacro
 /* 定义一个宏：用于保存通用寄存器 */
@@ -79,33 +78,22 @@ __u_alltraps:
     csrr t3, fcsr
     sd t3, FCSR_OFFSET(sp)
 
-    # 加载内核页表根物理页号到 t0 暂存
-    ld t0, K_SATP_OFFSET(sp)
-    # 加载trap_handler地址到 t1 暂存
-    ld t1, TRAP_HANDLER_OFFSET(sp)
+    # 加载trap_handler地址到 t0 暂存
+    ld t0, TRAP_HANDLER_OFFSET(sp)
 
     # 转到内核栈（SAFE: 先读后写）
     ld sp, K_SP_OFFSET(sp)
-    # 切换到内核页表
-    csrw satp, t0
-    # 刷新TLB
-    sfence.vma
 
     # 跳转到内核 trap_handler
-    jr t1
+    jr t0
 
 /*
  * U态 Trap 退出 S态
  *
  * 由 trap_return() 调用：
  * - a0: TrapContext 的地址
- * - a1: 应用程序的satp
  */
-__u_restore:    
-    # 恢复应用程序的页表
-    csrw satp, a1
-    sfence.vma
-
+__u_restore:
     # 恢复 sscratch，指向 TrapContext
     csrw sscratch, a0
     # sp 指向 TrapContext，开始恢复

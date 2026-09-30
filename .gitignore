@@ -6,3 +6,6 @@ target/
 build/
 output/
 __pycache__/
+
+# AGENT Rules
+*AGENTS.md

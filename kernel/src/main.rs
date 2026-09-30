@@ -26,7 +26,10 @@ use core::arch::global_asm;
 
 use riscv::register::sstatus;
 
-global_asm!(include_str!("start.S"));
+global_asm!(concat!(
+    include_str!(concat!(env!("OUT_DIR"), "/kernel_consts.S")),
+    include_str!("start.S"),
+));
 
 global_asm! {include_str!(concat!(env!("OUT_DIR"), "/usr_linker.S"))}
 

@@ -36,5 +36,10 @@ impl TaskContext {
 global_asm!(include_str!("switch.S"));
 
 unsafe extern "C" {
-    pub unsafe fn __switch(current_task_cx: *mut TaskContext, next_task_cx: *const TaskContext);
+    pub unsafe fn __switch(
+        current_task_cx: *mut TaskContext,
+        next_task_cx: *const TaskContext,
+        next_task_satp: usize,
+        asid_enabled: bool,
+    );
 }

@@ -1,13 +1,11 @@
 # 内核构建配置（单一事实来源）
 #
-# 本文件由 build.rs 在编译期读取，并分发到：
-#   - 链接脚本：通过 -defsym=BASE_ADDRESS=... 注入（链接器"宏"）
-#   - Rust 源码：生成 OUT_DIR/generated.rs 中的常量，经 config.rs 引入
-#
-# 数值配置（十六进制或十进制均可）与字符串配置（如 log_level）在此统一管理。
+# 本文件由 build.rs 在编译期读取
 
 # 内核加载基址
 k_base_address = 0x40200000
+# 内核高半区虚拟地址偏移（内核 VA = PA + k_v_mem_offset，须 1 GiB 对齐）
+k_v_mem_offset = 0xFFFFFFC000000000
 # mtime 寄存器递增频率（单位：Hz），用于计算时间
 # 根据JH7110 TRM，mtime寄存器时钟来自 osc时钟/6 ，而 osc时钟为24MHz，
 # 因此 mtime 寄存器频率为 4MHz

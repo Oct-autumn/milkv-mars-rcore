@@ -15,7 +15,7 @@ use crate::{
     config::{TRAMPOLINE, TRAP_CONTEXT},
     error, linker_symbol_addr,
     sys_call::syscall,
-    task::{exit_current_task_and_run_next, get_current_satp, get_current_trap_cx},
+    task::{exit_current_task_and_run_next, get_current_trap_cx},
 };
 
 global_asm!(include_str!("trap.S"));
@@ -94,7 +94,6 @@ pub fn trap_handler() -> ! {
 pub fn u_trap_return() -> ! {
     set_user_trap_entry();
     let trap_cx_ptr = TRAP_CONTEXT;
-    let user_satp = get_current_satp();
     // __u_restore 的代码位于 内核的 trampoline 段（TRAMPOLINE）中
     // 由于 __u_restore 的代码在编译时无法确定最终的虚拟地址，因此我们在运行时计算其虚拟地址：
     // __u_restore 的虚拟地址 = TRAMPOLINE + (__u_restore 的链接时偏移 - __u_alltraps 的链接时偏移)
@@ -107,13 +106,12 @@ pub fn u_trap_return() -> ! {
 
     unsafe {
         // 在返回用户态前，刷新指令缓存，确保 __u_restore 的指令被正确加载
-        // 执行 __u_restore 时，a0 = trap_cx_ptr, a1 = user_satp
+        // 执行 __u_restore 时，a0 = trap_cx_ptr（返回用户态不再在此切换 satp，故无 a1）
         asm!(
             "fence.i",
             "jr {restore_fn_va}",
             restore_fn_va = in(reg) restore_fn_va,
             in("a0") trap_cx_ptr,
-            in("a1") user_satp,
             options(noreturn)
         )
     }

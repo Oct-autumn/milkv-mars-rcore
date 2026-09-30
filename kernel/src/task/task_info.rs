@@ -55,13 +55,13 @@ impl TaskControlBlock {
     }
 
     /// 获取任务的satp
-    pub fn get_satp(&self) -> Satp {
-        self.memory_set.get_satp()
+    pub fn get_satp(&mut self) -> Satp {
+        self.memory_set.satp()
     }
 
     pub fn new(elf_data: &[u8], app_id: usize) -> Self {
         // 解析 ELF 文件，创建内存集
-        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data)
+        let (mut memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data)
             .unwrap_or_else(|e| panic!("invalid app ELF (app_id={app_id}): {e}"));
 
         // 计算陷阱上下文在用户空间的物理页号
@@ -78,6 +78,9 @@ impl TaskControlBlock {
             MemoryMapPermission::R | MemoryMapPermission::W,
             None,
         );
+        // 继承内核页表的根节点[257]和[510]，使得应用程序陷入时可以不切换页表访问内核代码和内核栈
+        // 该操作必须在内核空间分配内核栈之后进行，否则可能继承无效的页表项，导致应用程序陷入时访问内核代码或内核栈失败
+        memory_set.copy_kernel_page_table();
 
         // 创建任务控制块
         let task_control_block = Self {
@@ -97,7 +100,6 @@ impl TaskControlBlock {
         *trap_cx = TrapContext::app_init_context(
             entry_point,
             user_sp,
-            KERNEL_MEM.exclusive_access().get_satp().bits(),
             kernel_stack_top,
             linker_symbol_addr!(trap_handler),
         );

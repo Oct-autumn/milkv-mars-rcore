@@ -14,7 +14,7 @@ use crate::{
     app_loader::{get_app_data, get_num_app},
     config::{self},
     debug, info,
-    mem::{MemoryMapPermission, PhysicalAddress, VirtualAddress},
+    mem::{MemoryMapPermission, PhysicalAddress, VirtualAddress, asid_enabled},
     sbi_call::shutdown,
     sync::UPSafeCell,
     time::{get_time, set_next_timer},
@@ -73,13 +73,6 @@ impl TaskManager {
         (tcb.u_run_time, tcb.k_run_time + (now - tcb.last_enter_time))
     }
 
-    /// 读取当前任务的 satp 寄存器值
-    fn get_current_satp(&self) -> usize {
-        let inner = self.inner.exclusive_access();
-        let current = inner.current_task;
-        inner.tasks[current].get_satp().bits()
-    }
-
     fn init(&self) {
         info!("Prepare to run the first task.");
         unsafe {
@@ -97,11 +90,17 @@ impl TaskManager {
         task0.last_enter_time = get_time();
         debug!("Task {} starts running.", task0.id);
         let next_task_cx_ptr = &task0.cx as *const TaskContext;
+        let next_task_satp = task0.get_satp().bits();
         drop(inner);
 
         let mut _unused = TaskContext::zero_init();
         unsafe {
-            context::__switch(&mut _unused as *mut TaskContext, next_task_cx_ptr);
+            context::__switch(
+                &mut _unused as *mut TaskContext,
+                next_task_cx_ptr,
+                next_task_satp,
+                asid_enabled(),
+            );
         }
         unreachable!("Should not return to run_first_task");
     }
@@ -172,11 +171,17 @@ impl TaskManager {
 
             let current_task_cx_ptr = &mut inner.tasks[current].cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next_task].cx as *const TaskContext;
+            let next_task_satp = inner.tasks[next_task].get_satp().bits();
 
             drop(inner); // 释放锁，避免在切换上下文时发生死锁
 
             unsafe {
-                context::__switch(current_task_cx_ptr, next_task_cx_ptr);
+                context::__switch(
+                    current_task_cx_ptr,
+                    next_task_cx_ptr,
+                    next_task_satp,
+                    asid_enabled(),
+                );
             }
             // 这里我们不添加unreachable!宏，因为如果当前任务是被挂起的，
             // 那么下一次该任务被调度时__switch函数会在从这里继续执行。
@@ -211,10 +216,6 @@ lazy_static! {
 
 pub fn get_current_task() -> usize {
     TASK_MANAGER.get_current_task()
-}
-
-pub fn get_current_satp() -> usize {
-    TASK_MANAGER.get_current_satp()
 }
 
 pub fn get_current_trap_cx() -> &'static mut TrapContext {

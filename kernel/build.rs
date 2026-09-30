@@ -1,10 +1,11 @@
 //! 构建脚本：将 kernel/config.toml 中的配置分发到链接脚本与 Rust 源码。
 //!
-//! 本脚本承担三类工作：
+//! 本脚本承担四类工作：
 //!   1. 读取 config.toml，把数值配置（如 base_address）通过
 //!      `-defsym` 注入链接脚本（rust-lld 的"宏"机制）；
 //!   2. 生成 OUT_DIR/generated.rs，让 Rust 源码共享同一份配置常量；
-//!   3. 追踪 config.toml 与 linker.lds 的变更，使 cargo 能够感知并触发重链。
+//!   3. 生成 OUT_DIR/kernel_consts.S，让汇编源码（如 start.S）共享同一份配置常量；
+//!   4. 追踪 config.toml 与 linker.lds 的变更，使 cargo 能够感知并触发重链。
 //!
 //! 板卡等"开关类"配置使用 Cargo features（见 Cargo.toml），
 //! 在 build.rs 中可通过 CARGO_FEATURE_<NAME> 环境变量感知。
@@ -16,6 +17,7 @@ use serde::Deserialize;
 #[derive(Deserialize)]
 struct Config {
     k_base_address: usize,
+    k_v_mem_offset: usize,
     mtime_frequency: usize,
     u_stack_size: usize,
     k_stack_size: usize,
@@ -66,6 +68,11 @@ pub const K_BASE_ADDRESS: usize = 0x{:x};"#,
         configs.k_base_address
     ));
     content.push(format!(
+        r#"/// 内核虚拟地址偏移量
+pub const K_V_MEM_OFFSET: usize = 0x{:x};"#,
+        configs.k_v_mem_offset
+    ));
+    content.push(format!(
         r#"/// 时钟频率（Hz）
 pub const MTIME_FREQUENCY: usize = {};"#,
         configs.mtime_frequency
@@ -78,10 +85,8 @@ pub const U_STACK_SIZE: usize = {};"#,
     content.push(format!(
         r#"/// 内核栈大小（字节）
 pub const K_STACK_SIZE: usize = {};
-/// 内核栈虚拟基址（首个任务的栈顶 = TRAP_CONTEXT，后续任务依次向下排布）
-/// 注意：必须引用 TRAP_CONTEXT（页对齐），不能写成 usize::MAX - PAGE_SIZE，
-/// 后者会落在 TRAP_CONTEXT 页的页尾字节上，导致栈顶未对齐并侵占该页。
-pub const K_STACK_V_BASE: usize = TRAP_CONTEXT;"#,
+/// 内核栈虚拟基址（首个任务的栈顶，后续任务依次向下排布）
+pub const K_STACK_V_BASE: usize = TRAMPOLINE - (1usize << 30);"#,
         {
             assert!(
                 configs
@@ -124,6 +129,19 @@ pub const LOG_LEVEL_NAME: &str = "{}";"#,
     ));
 
     fs::write(out_path, content.join("\n")).expect("写入 generated.rs 失败");
+}
+
+/// 生成汇编常量文件（kernel_consts.S），供 start.S 等汇编代码引用。
+///
+/// 与 generated.rs 同源（config.toml），只是面向汇编：用 `.equ` 把配置固化为
+/// 汇编器可折叠的 64 位常量，避免在汇编里硬编码立即数。
+fn gen_asm_constants(configs: &Config, out_path: &Path) {
+    let content = format!(
+        "/* 由 build.rs 从 config.toml 自动生成，请勿手动修改 */\n\
+         .equ K_V_MEM_OFFSET, 0x{:x}\n",
+        configs.k_v_mem_offset
+    );
+    fs::write(out_path, content).expect("写入 kernel_consts.S 失败");
 }
 
 /// 获取用户程序产物目录（默认 ../build/usr）下的elf文件列表，按文件名前缀的数字排序。
@@ -244,14 +262,18 @@ fn main() {
     // ---- 分发 1: 注入链接脚本宏（rust-lld 的 -defsym 机制）----
     println!(
         "cargo:rustc-link-arg=-defsym=BASE_ADDRESS=0x{:x}",
-        configs.k_base_address
+        configs.k_v_mem_offset + configs.k_base_address
     );
 
     // ---- 分发 2: 生成 Rust 常量（Rust 侧与链接脚本共享同一事实来源）----
     let generated = Path::new(&out_dir).join("generated.rs");
     gen_config_constants(&configs, &generated);
 
-    // ---- 分发 3: 让 cargo 感知 linker.lds 的内容变更 ----
+    // ---- 分发 3: 生成汇编常量（汇编侧与 Rust 侧共享同一事实来源）----
+    let generated_asm = Path::new(&out_dir).join("kernel_consts.S");
+    gen_asm_constants(&configs, &generated_asm);
+
+    // ---- 分发 4: 让 cargo 感知 linker.lds 的内容变更 ----
     // 链接脚本通过 -Clink-arg=-T... 传给链接器，cargo 的 dep-info 不会追踪它；
     // 这里把其内容摘要注入一个无害链接符号，内容一变 → 链接参数变 → cargo 自动重链。
     if let Ok(lds_content) = fs::read(&lds_path) {
@@ -259,7 +281,7 @@ fn main() {
         println!("cargo:rustc-link-arg=-defsym=LDS_CONTENT_HASH=0x{hash:016x}");
     }
 
-    // ---- 分发 4: 生成 usr_linker.S，把用户程序链入内核 ----
+    // ---- 分发 5: 生成 usr_linker.S，把用户程序链入内核 ----
     let usr_apps = match get_usr_apps(&usr_prog_path) {
         Ok(apps) => apps,
         Err(e) => {

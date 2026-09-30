@@ -13,6 +13,8 @@
 __switch:
     # a0: 保存上下文的地址
     # a1: 加载上下文的地址
+    # a2: 加载任务的satp
+    # a3: 是否启用ASID
 
     # __switch 作为一个func被上层rust代码调用。为了切换任务上下文，它要做两件事：
     # [Stage 1]
@@ -28,6 +30,7 @@ __switch:
         SAVE_SN %n
         .set n, n+1
     .endr
+
     # [Stage 3]
     # 从 a1 指向的内存中（即下一个任务的 TaskContext 中）加载 sp、ra 和 s0-s11 到寄存器中。
     .set n, 0
@@ -37,6 +40,17 @@ __switch:
     .endr
     ld ra, 0*8(a1)
     ld sp, 1*8(a1)
+
     # [Stage 4]
+    # 切换到目标任务的页表
+    csrw satp, a2
+    # 判断是否启用了ASID
+    bnez a3, has_asid
+    # 如果未启用ASID，则执行 sfence.vma 指令全量刷新 TLB
+    sfence.vma
+has_asid:
+    # 如果启用ASID，则不需要刷新TLB
+
+    # [Stage 5]
     # 返回到下一个任务的上下文中，继续执行。
     ret

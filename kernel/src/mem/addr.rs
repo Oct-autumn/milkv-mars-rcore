@@ -1,6 +1,6 @@
 use core::ops::Add;
 
-use crate::config::{PAGE_SIZE, PAGE_SIZE_SHIFT};
+use crate::config::{K_V_MEM_OFFSET, PAGE_SIZE, PAGE_SIZE_SHIFT};
 
 use super::page_table::PageTableEntry;
 
@@ -103,15 +103,17 @@ impl PhysicalPageNumber {
     /// 访问原始页
     pub fn as_raw_page(&self) -> &'static mut [u8] {
         let pa: usize = self.0 << PAGE_SIZE_SHIFT;
-        unsafe { core::slice::from_raw_parts_mut(pa as *mut u8, PAGE_SIZE) }
+        let va: usize = pa + K_V_MEM_OFFSET;    // 将物理地址映射到内核虚拟地址
+        unsafe { core::slice::from_raw_parts_mut(va as *mut u8, PAGE_SIZE) }
     }
 
     /// 以页表形式访问原始页
     pub fn as_page_table(&self) -> &'static mut [PageTableEntry] {
         let pa: usize = self.0 << PAGE_SIZE_SHIFT;
+        let va: usize = pa + K_V_MEM_OFFSET;    // 将物理地址映射到内核虚拟地址
         unsafe {
             core::slice::from_raw_parts_mut(
-                pa as *mut PageTableEntry,
+                va as *mut PageTableEntry,
                 PAGE_SIZE / size_of::<PageTableEntry>(),
             )
         }
@@ -120,7 +122,8 @@ impl PhysicalPageNumber {
     /// 以 mut T 形式访问原始页
     pub fn as_mut_type<T>(&self) -> &'static mut T {
         let pa: usize = self.0 << PAGE_SIZE_SHIFT;
-        unsafe { &mut *(pa as *mut T) }
+        let va: usize = pa + K_V_MEM_OFFSET;    // 将物理地址映射到内核虚拟地址
+        unsafe { &mut *(va as *mut T) }
     }
 }
 

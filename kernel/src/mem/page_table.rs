@@ -142,10 +142,14 @@ impl PageTable {
         *pte = PageTableEntry::empty();
     }
 
-    pub fn to_satp(&self) -> Satp {
-        let satp =
-            Satp::from_bits((satp::Mode::Sv39.into_usize() << 60) | usize::from(self.root_ppn)); // ASID 暂时置空
-        satp
+    /// 获取页表的根页表物理页号
+    pub fn root_ppn(&self) -> PhysicalPageNumber {
+        self.root_ppn
+    }
+
+    /// 获取页表的satp值
+    pub fn satp(&self) -> Satp {
+        Satp::from_bits((satp::Mode::Sv39.into_usize() << 60) | usize::from(self.root_ppn))
     }
 
     /* 用于手动MMU的辅助方法 */

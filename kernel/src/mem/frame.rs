@@ -2,7 +2,8 @@ use alloc::vec::Vec;
 use lazy_static::lazy_static;
 
 use crate::{
-    config::{MEM_END_ADDR, PAGE_SIZE_SHIFT},
+    config::{K_V_MEM_OFFSET, MEM_END_ADDR, PAGE_SIZE_SHIFT},
+    linker_symbol_addr,
     mem::addr::PhysicalPageNumber,
     sync::UPSafeCell,
 };
@@ -33,10 +34,11 @@ impl FrameAllocator for StackFrameAllocator {
         unsafe extern "C" {
             safe fn ekernel();
         }
-        let ekernel_ptr = ekernel as *const () as usize;
+        let ekernel_va = linker_symbol_addr!(ekernel);
+        let ekernel_pa = ekernel_va - K_V_MEM_OFFSET;
         Self {
             // current 指向内核结束地址的下一个页号
-            current: (ekernel_ptr + PAGE_SIZE - 1) >> PAGE_SIZE_SHIFT,
+            current: (ekernel_pa + PAGE_SIZE - 1) >> PAGE_SIZE_SHIFT,
             // end 指向内存结束地址的页号
             end: MEM_END_ADDR >> PAGE_SIZE_SHIFT,
             recycled: Vec::new(),
