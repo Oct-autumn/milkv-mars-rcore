@@ -25,15 +25,27 @@ Milk-V Mars 是一款基于 JH7110 处理器的 RISC-V 开发板，具有丰富�
     - Rust 1.100.0-nightly (215a8af4b 2026-09-15)，且 LLVM 需 ≥ 23
         - 必须为 nightly：构建依赖 `build-std` 与自定义 target spec（`json-target-spec`）两个 unstable 特性
         - 版本下限来自 [rust-lang/rust#80608](https://github.com/rust-lang/rust/issues/80608) 的上游修复（rustc PR #160594，需 LLVM ≥ 23）：低于该版本时，`trap.S` 中的浮点汇编会被误报为 `instruction requires 'D'`
-- Python 3.12
+- Python 3.12（上板脚本依赖 `pyserial`；XMODEM/YMODEM 协议由脚本自带实现，**无需安装 `lrzsz`**）
 
 ## 构建&上板测试
+
+开发板无 QEMU，通过串口烧录：BootROM 用 XMODEM 收 SPL，SPL 再用 YMODEM 收 SBI / kernel 镜像。
+协议收发由 [`tools/scripts/full_flash_test.py`](tools/scripts/full_flash_test.py) 自行实现，传输过程实时显示进度条（百分比 / 字节数 / 速率 / 预计剩余时间 / 重传次数），全程字节流记录在 `--trace` 指定的日志中。
 
 ```bash
 # 构建 kernel.bin.img
 make
-# 上板测试
-python3 tools/scripts/full_flash_test.py --boot_mode=2
+
+# 上板测试（默认 /dev/ttyACM0@115200）
+python3 tools/scripts/full_flash_test.py --boot_mode=1   # SBI + TBT
+python3 tools/scripts/full_flash_test.py --boot_mode=2   # 仅 TBT（SBI 从 flash 读）
+
+# 常用可选项
+#   --port /dev/ttyUSB0   指定串口      --baud 115200
+#   --verbose             打印邀请/块0/重传等协议细节，便于排查上板问题
+#   --ymodem_block 128    YMODEM 退回 128B 小包
+#   --auto_script x.py    引导完成后执行自动化脚本（注入 ctx：write_line/expect/wait）
+#   --trace /tmp/full_trace.bin        完整字节流日志路径（默认值）
 ```
 
 ## License

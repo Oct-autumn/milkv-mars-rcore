@@ -72,6 +72,27 @@ rustup component add rust-analyzer  # 用于给 VSCode、OpenCode 等提供 Rust
 
 其中 `rust-src` 是必需的：内核与用户程序都构建在自定义 target spec 之上，需要借助 `build-std` 从源码编译 `core`，因此无需再 `rustup target add` 预编译的 riscv 标准库。
 
+## Python 环境
+
+上板测试脚本需要 Python 3.12 与 `pyserial`：
+
+```bash
+sudo apt-get install python3 python3-pip
+# 方式一（Debian/Ubuntu 推荐，避开 PEP 668 限制）
+sudo apt-get install python3-serial
+# 方式二：pip（新版发行版可能提示 externally-managed-environment，此时用虚拟环境）
+pip install pyserial
+```
+
+注意事项：
+
+- **不需要安装 `lrzsz`**：`tools/scripts/full_flash_test.py` 自带 XMODEM/YMODEM 发送端（`sx`/`sb` 仅作参考实现），依赖只有 `pyserial`；
+- 串口设备（如 `/dev/ttyACM0`）需当前用户可访问，通常要加入 `dialout` 组后重新登录：
+
+  ```bash
+  sudo usermod -aG dialout $USER
+  ```
+
 ## IDE配置
 
 我推荐你使用 VSCode 作为 IDE，并安装以下插件：

@@ -5,10 +5,10 @@ JH7110 上板测试脚本（Milk-V Mars）
 ====================================================================
 运行步骤：
 - 等待上电后 BootROM 稳定，累计收集足够多的 'C' 邀请
-- 启动 sx 发送 SPL .normal.out 文件
+- 用内置 XMODEM-CRC 发送端上传 SPL .normal.out
 - 等待 SPL 启动，跳过 Recovery 菜单，选择引导模式（1:SBI+TBT/2:TBT only）
 - 等待 SPL 进入 ymodem 接收阶段
-- 启动 sb 发送文件（根据选择的引导模式，发送不同的文件）
+- 用内置 YMODEM 发送端上传镜像（按引导模式发送不同文件）
 - 等待引导
 - 接收后续串口输出，读取键盘输入反馈到串口
 - 全程记录日志到 full_trace.bin
@@ -16,7 +16,7 @@ JH7110 上板测试脚本（Milk-V Mars）
 
 串口链路说明（基于 SPL 实测输出）：
 - BootROM 上电后持续输出 '(C)StarFive' 与 'C' 邀请（XMODEM-CRC 握手），
-  用 sx 上传 SPL。
+  上传 SPL 用 XMODEM。
 - SPL 启动后打印 '==== Minimum SPL - v0.1 ===='，随后进入 Recovery
   倒计时（'Entering Recovery Menu in 05 seconds ... (Press any key to skip)'），
   任意键（回车）可跳过。
@@ -25,28 +25,43 @@ JH7110 上板测试脚本（Milk-V Mars）
     1: Boot From UART (SBI + TBT)
     2: Boot From UART (TBT only)
   输入 1/2 并回车确认。
-- 模式 1（SBI+TBT）：先 'Transfer SBI image via YMODEM now...'（sb 传 SBI），
-  收到 'Done!' 后 SPL 自动输出 'Transfer TBT image via YMODEM now...'（sb 传 TBT）。
+- 模式 1（SBI+TBT）：先 'Transfer SBI image via YMODEM now...'（YMODEM 传 SBI），
+  收到 'Done!' 后 SPL 自动输出 'Transfer TBT image via YMODEM now...'（YMODEM 传 TBT）。
 - 模式 2（TBT only）：'Reading SBI image from flash ...Done!' 后
-  直接 'Transfer TBT image via YMODEM now...'（sb 传 TBT）。
+  直接 'Transfer TBT image via YMODEM now...'（YMODEM 传 TBT）。
 - 传输成功标志：'Recv success, total size: ...Bytes.' + 'Done!'。
 - 最后 'Booting SBI ...' 表示 SPL 已把控制权交给 SBI/三级引导。
 
-传输阶段的串口数据由脚本独占，sx/sb 运行在伪终端(pty)里，脚本在
-串口与 pty 之间双向桥接，因此 full_trace.bin 可以全程连续记录。
+协议实现说明（本脚本自带发送端，**不再依赖 lrzsz 的 sx/sb**）：
+- 接收端源码见 mars-trd-boot-dev/spl/src/utils/y_modem.c，发送端握手与之对齐：
+    * 等接收端邀请：'C'(0x43)=CRC 模式，NAK(0x15)=校验和模式；
+    * YMODEM 块0 必须携带 "文件名\\0十进制大小 mtime mode serial\\0"，
+      接收端据此裁剪末块填充（否则会把填充字节写进 flash）；
+    * 接收端 ACK 块0 后会补发一次 'C'，发送端等它再发数据块；
+    * 数据块 CRC-16/XMODEM（poly 0x1021，初值 0，高字节在前），NAK/超时重传；
+    * 第一个 EOT 被 ACK 后接收端再发 'C'，随后以空块0（或第二个 EOT）收尾。
+- 数据块默认 1024B（接收端支持 STX 包，与 sb -k 一致），可用 --ymodem_block 改回 128B；
+  XMODEM 默认 128B（与 sx 一致，BootROM 实测可用）。
+- 传输阶段串口数据仍全部写入 full_trace.bin（字节级连续），并在终端显示
+  进度条（百分比 / 字节数 / 速率 / 预计剩余时间 / 重传次数）。
 """
 
-import os
-import sys
-import time
-import pty
-import select
-import serial
-import subprocess
-import re
-import tty
-import termios
+
 import argparse
+import contextlib
+import os
+import re
+import select
+import shutil
+import sys
+import termios
+import time
+import tty
+
+import serial
+
+import serial
+
 
 # ----------------------------------------------------------------------------
 # 全局 abort：打印错误并以非零码退出（资源由 finally 统一关闭）
@@ -69,10 +84,8 @@ class Trace:
             self.f.flush()
 
     def close(self):
-        try:
+        with contextlib.suppress(Exception):
             self.f.close()
-        except Exception:
-            pass
 
 
 # ----------------------------------------------------------------------------
@@ -81,7 +94,7 @@ class Trace:
 # 核心约定：所有从串口读到的数据都走 _ingest() ->
 #   1) 写入日志 full_trace.bin（全程连续）
 #   2) 追加进 self.buffer（供 read_until 跨阶段匹配，避免丢数据）
-#   3) 若 self.tee 为真，实时回显到终端（传输阶段关闭，避免二进制乱码）
+#   3) 若 self.tee 为真，实时回显到终端（协议传输阶段关闭，避免二进制乱码）
 # ----------------------------------------------------------------------------
 class Uart:
     def __init__(self, ser, trace, tee=True):
@@ -97,11 +110,9 @@ class Uart:
         self.trace.write(data)
         self.buffer += data
         if self.tee:
-            try:
+            with contextlib.suppress(OSError):
                 sys.stdout.buffer.write(data)
                 sys.stdout.buffer.flush()
-            except (BrokenPipeError, OSError):
-                pass
         return len(data)
 
     def pump(self, timeout):
@@ -111,11 +122,11 @@ class Uart:
         while time.time() < end:
             r, _, _ = select.select([self.ser], [], [], 0.05)
             if r:
-                data = self.ser.read(4096)
-                if not data:
+                if data := self.ser.read(4096):
+                    total += self._ingest(data)
+                else:
                     # 串口可读但读到空 => 连接异常/断开
                     raise serial.SerialException("串口读取到空数据，可能已断开")
-                total += self._ingest(data)
             else:
                 time.sleep(0.01)
         return total
@@ -131,17 +142,14 @@ class Uart:
         buf = bytes(self.buffer)
         while time.time() - start < timeout:
             for p in patterns:
-                m = re.search(p, buf)
-                if m:
+                if m := re.search(p, buf):
                     consumed_end = m.end()
                     consumed = bytes(self.buffer[:consumed_end])
                     del self.buffer[:consumed_end]
                     if label:
                         print(f"\n[{label}] 命中: {p!r}", flush=True)
                     return p, consumed
-            # 未命中则继续收取数据，并把新数据并入待匹配 buf
-            n = self.pump(0.2)
-            if n:
+            if _ := self.pump(0.2):
                 buf = bytes(self.buffer)
         if label:
             print(f"\n[{label}] 等待超时 {timeout}s", flush=True)
@@ -156,56 +164,384 @@ class Uart:
             s = s.encode()
         self.ser.write(s + b"\r")
 
-    def ymodem_send(self, cmd, timeout):
-        """在 pty 中运行 sx/sb 并桥接串口<->pty，直至子进程退出。
 
-        cmd 例：['sx','-q','-b','-X', spl_path] 或 ['sb','-q','-b','--ymodem', img_path]。
-        桥接期间关闭终端回显（二进制帧），但串口数据仍写入日志与缓冲区。
+# ----------------------------------------------------------------------------
+# 协议常量（XMODEM / YMODEM）
+# ----------------------------------------------------------------------------
+SOH = 0x01   # 128 字节数据包
+STX = 0x02   # 1024 字节数据包
+EOT = 0x04   # 传输结束
+ACK = 0x06   # 确认
+NAK = 0x15   # 否定确认（请求重传）
+CAN = 0x18   # 取消传输
+SUB = 0x1A   # ^Z，末块填充（CPMEOF）
+CHR_C = 0x43  # 'C'，CRC 模式邀请
+
+ACK_B = bytes([ACK])
+CAN_B = bytes([CAN])
+EOT_B = bytes([EOT])
+CHR_C_B = bytes([CHR_C])
+
+# CRC-16/XMODEM：poly 0x1021、初值 0、无输出异或、MSB-first（与接收端 calc_crc16(
+# ..., CRC16_CCITT) 一致）。查表实现，120KB 文件开销可忽略。
+_CRC16_TABLE = []
+for _i in range(256):
+    _c = _i << 8
+    for _ in range(8):
+        _c = ((_c << 1) ^ 0x1021) & 0xFFFF if (_c & 0x8000) else ((_c << 1) & 0xFFFF)
+    _CRC16_TABLE.append(_c)
+
+
+def crc16_xmodem(data):
+    """CRC-16/XMODEM（poly 0x1021，初值 0）。"""
+    crc = 0
+    for b in data:
+        crc = ((crc << 8) & 0xFFFF) ^ _CRC16_TABLE[((crc >> 8) ^ b) & 0xFF]
+    return crc
+
+
+def build_packet(header, seq, payload, crc_mode=True):
+    """组一个 XMODEM/YMODEM 数据帧：帧头 + 序号 + 序号反码 + 数据 + CRC/校验和。"""
+    frame = bytearray([header, seq & 0xFF, (~seq) & 0xFF])
+    frame += payload
+    if crc_mode:
+        c = crc16_xmodem(payload)
+        frame += bytes([(c >> 8) & 0xFF, c & 0xFF])
+    else:
+        frame.append(sum(payload) & 0xFF)
+    return bytes(frame)
+
+
+class TransferError(RuntimeError):
+    """协议层传输失败（握手超时、重传耗尽、接收方取消等）。"""
+
+
+# ----------------------------------------------------------------------------
+# Link：协议收发适配层（串口 <-> 字节流）
+#
+# - 读到的每个字节都走 Uart._ingest()，因此 full_trace.bin 依旧全程连续；
+# - 协议期间关闭终端回显（二进制帧会刷屏），close() 时恢复；
+# - 优先消费 uart.buffer 中的残留字节（read_until 命中后可能还剩数据），
+#   被协议消费的字节会从 buffer 移除，避免污染后续 expect()。
+# ----------------------------------------------------------------------------
+class Link:
+    def __init__(self, uart):
+        self.uart = uart
+        self._tee = uart.tee
+        uart.tee = False
+
+    def close(self):
+        self.uart.tee = self._tee
+
+    def _fill(self, timeout):
+        """保证 buffer 中至少有 1 字节；超时返回 False。"""
+        if self.uart.buffer:
+            return True
+        end = time.time() + timeout
+        while True:
+            remain = end - time.time()
+            if remain <= 0:
+                return False
+            r, _, _ = select.select([self.uart.ser], [], [], min(remain, 0.05))
+            if not r:
+                continue
+            data = self.uart.ser.read(4096)
+            if not data:
+                raise serial.SerialException("串口读取到空数据，可能已断开")
+            self.uart._ingest(data)
+            if self.uart.buffer:
+                return True
+
+    def recv_byte(self, timeout):
+        """读取 1 字节；超时返回 b''。"""
+        if not self._fill(timeout):
+            return b""
+        b = bytes(self.uart.buffer[:1])
+        del self.uart.buffer[:1]
+        return b
+
+    def write(self, data):
+        self.uart.ser.write(data)
+
+
+# ----------------------------------------------------------------------------
+# Progress：传输进度显示
+#
+# - stdout 是终端：'\r' 原地刷新单行进度条（限速 20 次/秒）
+# - stdout 被重定向（非 TTY）：按 10% 阶梯各打印一行，避免刷屏
+# ----------------------------------------------------------------------------
+class Progress:
+    def __init__(self, proto, name, total, verbose=False):
+        self.proto = proto
+        self.raw_name = name
+        self.name = name if len(name) <= 24 else f"{name[:11]}...{name[-10:]}"
+        self.total = max(1, total)
+        self.size = total
+        self.verbose = verbose
+        self.tty = sys.stdout.isatty()
+        self.start = time.time()
+        self.last = 0.0
+        self.next_pct = 0
+        self.last_len = 0
+        cols = shutil.get_terminal_size((100, 24)).columns
+        self.bar_width = max(16, min(36, cols - 62))
+
+    def _line(self, sent, retries):
+        elapsed = max(1e-3, time.time() - self.start)
+        pct = min(100, sent * 100 // self.total)
+        filled = int(self.bar_width * pct / 100)
+        bar = "#" * filled + "-" * (self.bar_width - filled)
+        speed = sent / elapsed
+        eta = (self.total - sent) / speed if speed > 0 else 0.0
+        return (f"[{self.proto}] {self.name} [{bar}] {pct:3d}% "
+                f"{sent}/{self.total}B {speed / 1024:6.1f}KB/s ETA{eta:5.1f}s 重传{retries}")
+
+    def _emit(self, text):
+        if self.tty:
+            pad = " " * max(0, self.last_len - len(text))
+            sys.stdout.write("\r" + text + pad)
+        else:
+            sys.stdout.write(text + "\n")
+        sys.stdout.flush()
+        self.last_len = len(text)
+
+    def update(self, sent, retries=0):
+        now = time.time()
+        if self.tty:
+            if now - self.last < 0.05 and sent < self.total:
+                return
+        else:
+            pct = sent * 100 // self.total
+            if pct < self.next_pct and sent < self.total:
+                return
+            self.next_pct = (pct // 10 + 1) * 10
+        self.last = now
+        self._emit(self._line(sent, retries))
+
+    def finish(self, ok, retries=0, blocks=0, note=""):
+        elapsed = max(1e-3, time.time() - self.start)
+        avg = self.size / elapsed / 1024
+        if self.tty:
+            sys.stdout.write("\r" + " " * self.last_len + "\r")
+            sys.stdout.flush()
+        state = "完成" if ok else "失败"
+        msg = (f"[{self.proto}] {state}: {self.raw_name} {self.size}B / {blocks} 块, "
+               f"用时 {elapsed:.1f}s, 平均 {avg:.1f}KB/s, 重传 {retries} 次")
+        if note:
+            msg += f"（{note}）"
+        print(msg, flush=True)
+
+
+# ----------------------------------------------------------------------------
+# 发送端：XMODEM / YMODEM（自实现，行为对齐 mars-trd-boot-dev 的 SPL 接收端）
+# ----------------------------------------------------------------------------
+class BaseSender:
+    def __init__(self, link, *, block_size, max_retries=10, resp_timeout=2.0,
+                 crc_mode=True, verbose=False, progress=None):
+        self.link = link
+        self.block_size = block_size
+        self.max_retries = max_retries
+        self.resp_timeout = resp_timeout
+        self.crc_mode = crc_mode
+        self.verbose = verbose
+        self.progress = progress
+        self.retries = 0     # 累计重传次数
+        self.blocks = 0      # 累计发送的数据块数
+        self.last_noise = b""  # 最近一次等待控制字节时吞掉的非控制字节
+
+    # ---- 控制字节收发 ----
+    def _wait_ctl(self, timeout, ignore_c=False):
+        """等待一个控制字节（ACK/NAK/CAN/EOT/'C'），超时返回 b''。
+
+        ignore_c=True 时把 'C' 也当噪声丢掉：接收端在收到首包之前会每 500ms
+        发一次 'C' 邀请，在途的邀请可能晚于数据包到达，若把它当成应答就会
+        白白触发一次重传（接收端其实是先发 ACK 再补 'C'，这里只需吃掉邀请）。
+        其余字节一律按噪声处理（接收端可能夹带调试文本），最多缓存 4KB，
+        verbose 下回显，便于上板排查。
         """
-        self.tee = False
-        master, slave = pty.openpty()
-        os.set_blocking(master, False)
-        try:
-            # 预置 pty slave 为 raw，防止 '\n'->'\r\n' 转换破坏二进制帧
-            tty.setraw(slave)
-            proc = subprocess.Popen(
-                cmd, stdin=slave, stdout=slave, close_fds=True
-            )
-            os.close(slave)
-            start = time.time()
-            while proc.poll() is None:
-                if time.time() - start > timeout:
-                    proc.kill()
-                    proc.wait()
-                    raise RuntimeError(f"{cmd[0]} 传输超时({timeout}s)")
-                r, _, _ = select.select([self.ser, master], [], [], 0.1)
-                # 串口 -> pty（给 sx/sb 当输入，含 C 邀请/ACK 帧），同时记录+入缓冲
-                if self.ser in r:
-                    data = self.ser.read(4096)
-                    if data:
-                        self._ingest(data)
-                        try:
-                            os.write(master, data)
-                        except OSError:
-                            pass
-                # pty -> 串口（sx/sb 发出的数据帧/文件内容）
-                if master in r:
-                    try:
-                        data = os.read(master, 4096)
-                    except OSError:
-                        data = b""
-                    if data:
-                        self.ser.write(data)
-            rc = proc.wait()
-            if rc != 0:
-                raise RuntimeError(f"{cmd[0]} 退出码 {rc}")
-            return rc
-        finally:
-            self.tee = True
+        end = time.time() + timeout
+        noise = bytearray()
+        while True:
+            remain = end - time.time()
+            if remain <= 0:
+                self._report_noise(noise)
+                return b""
+            b = self.link.recv_byte(remain)
+            if not b:
+                self._report_noise(noise)
+                return b""
+            if b[0] == CHR_C and ignore_c:
+                continue
+            if b[0] in (ACK, NAK, CAN, EOT, CHR_C):
+                self._report_noise(noise)
+                return b
+            noise += b
+            if len(noise) >= 4096:
+                self._report_noise(noise)
+                return b""
+
+    def _report_noise(self, noise):
+        if noise:
+            self.last_noise = bytes(noise)
+            if self.verbose:
+                shown = bytes(noise[:160])
+                print(f"\n[proto] 收到非控制字节 {len(noise)}B: {shown!r}", flush=True)
+        else:
+            self.last_noise = b""
+
+    def _wait_invite(self, timeout):
+        """等待接收端握手邀请。'C' => CRC 模式；NAK => 校验和模式。"""
+        end = time.time() + timeout
+        while True:
+            remain = end - time.time()
+            if remain <= 0:
+                raise TransferError(f"等待接收端 'C' 邀请超时({timeout:.0f}s)")
+            b = self.link.recv_byte(remain)
+            if not b:
+                raise TransferError(f"等待接收端 'C' 邀请超时({timeout:.0f}s)")
+            if b[0] == CHR_C:
+                self.crc_mode = True
+                if self.verbose:
+                    print("\n[proto] 收到 'C' 邀请：CRC 模式", flush=True)
+                return
+            if b[0] == NAK:
+                self.crc_mode = False
+                if self.verbose:
+                    print("\n[proto] 收到 NAK 邀请：校验和模式", flush=True)
+                return
+
+    def _send_frame(self, frame, what):
+        """发送一帧并等 ACK；NAK / 超时 / 其他控制字节都触发重传。"""
+        for attempt in range(1, self.max_retries + 1):
+            self.link.write(frame)
+            r = self._wait_ctl(self.resp_timeout, ignore_c=True)
+            if r == ACK_B:
+                return
+            if r == CAN_B:
+                raise TransferError(f"{what}: 接收端发送 CAN，传输被取消")
+            self.retries += 1
+            if self.verbose:
+                reason = f"0x{r[0]:02X}" if r else "超时"
+                extra = f" 最近非控制字节={self.last_noise[:40]!r}" if self.last_noise else ""
+                print(f"\n[proto] {what} 未确认({reason})，重传 {attempt}/{self.max_retries}{extra}",
+                      flush=True)
+        raise TransferError(f"{what}: 重传 {self.max_retries} 次仍未收到 ACK")
+
+    # ---- 数据块 ----
+    def _send_data(self, data):
+        total = len(data)
+        seq = 1
+        header = STX if self.block_size == 1024 else SOH
+        pad = bytes([SUB]) * self.block_size
+        for off in range(0, total, self.block_size):
+            chunk = data[off:off + self.block_size]
+            if len(chunk) < self.block_size:
+                chunk = chunk + pad[: self.block_size - len(chunk)]
+            self._send_frame(build_packet(header, seq, chunk, self.crc_mode),
+                             f"数据块 {seq & 0xFF}")
+            self.blocks += 1
+            seq += 1
+            if self.progress:
+                self.progress.update(min(total, off + self.block_size), self.retries)
+
+    # ---- 结束握手 ----
+    def _send_eot(self):
+        """发 EOT 并等 ACK；部分接收端会先 NAK 一次要求重发 EOT。"""
+        for attempt in range(1, self.max_retries + 1):
+            self.link.write(EOT_B)
+            r = self._wait_ctl(self.resp_timeout)
+            if r == ACK_B:
+                return
+            if r == CAN_B:
+                raise TransferError("EOT: 接收端发送 CAN，传输被取消")
+            if self.verbose:
+                reason = f"0x{r[0]:02X}" if r else "超时"
+                print(f"\n[proto] EOT 未确认({reason})，重发 {attempt}/{self.max_retries}", flush=True)
+        raise TransferError(f"EOT: 重发 {self.max_retries} 次仍未收到 ACK")
+
+
+class XModemSender(BaseSender):
+    """XMODEM(-CRC) 发送端：无文件头，数据块序号从 1 开始。"""
+
+    def send(self, data, name="", invite_timeout=60.0):
+        self._wait_invite(invite_timeout)
+        self._send_data(data)
+        self._send_eot()
+        return self
+
+
+class YModemSender(BaseSender):
+    """YMODEM(batch) 发送端：块0 文件头 + 数据块 + 双阶段 EOT 收尾。"""
+
+    def send(self, data, name="", invite_timeout=60.0, mtime=None):
+        self._wait_invite(invite_timeout)
+
+        # 块0：文件名\0 + "十进制大小 八进制mtime 八进制mode 串号\0"，NUL 补齐 128B。
+        # 接收端先跳过 '\0' 再读十进制数字作为文件长度（用于裁剪末块填充）。
+        if mtime is None:
+            mtime = int(time.time())
+        info = f"{name}\0{len(data)} {mtime:o} {0o644:o} 0\0".encode()
+        blk0 = info.ljust(128, b"\0")[:128]
+        if self.verbose:
+            print(f"\n[proto] 块0: {info[:80]!r}", flush=True)
+        self._send_frame(build_packet(SOH, 0, blk0, self.crc_mode), "文件头(块0)")
+
+        # 数据阶段邀请：接收端 ACK 块0 后会补发一次 'C'；等不到也照常发数据块
+        r = self._wait_ctl(5.0)
+        if r != CHR_C_B and self.verbose:
+            print(f"\n[proto] 未收到数据阶段 'C'（{r!r}），直接发送数据块", flush=True)
+
+        self._send_data(data)
+
+        # 收尾：第一个 EOT -> ACK 后接收端发 'C' 请求结束包（空块0）
+        self._send_eot()
+        r = self._wait_ctl(5.0)
+        if r == CHR_C_B:
             try:
-                os.close(master)
-            except OSError:
-                pass
+                self._send_frame(build_packet(SOH, 0, bytes(128), self.crc_mode), "结束包(空块0)")
+            except TransferError:
+                # 结束包未被确认不影响已传数据（接收端也可能已按 EOT 收尾）
+                if self.verbose:
+                    print("\n[proto] 结束包未确认，按已完成处理", flush=True)
+        elif r != EOT_B:
+            # 没等到 'C'：补发一个 EOT 兜底（部分接收端需要两个 EOT）
+            self.link.write(EOT_B)
+            self._wait_ctl(self.resp_timeout)
+        return self
+
+
+def transfer(uart, proto, path, *, block_size, retries=10, resp_timeout=2.0,
+             invite_timeout=60.0, verbose=False):
+    """用内置 XMODEM/YMODEM 发送端发送一个文件（含进度显示）。
+
+    成功返回发送端实例（可读 retries/blocks），失败抛 TransferError。
+    """
+    size = os.path.getsize(path)
+    name = os.path.basename(path)
+    with open(path, "rb") as f:
+        data = f.read()
+    if len(data) != size:
+        raise TransferError(f"读取 {path} 长度异常: {len(data)} != {size}")
+
+    pgr = Progress(proto.upper(), name, size, verbose=verbose)
+    link = Link(uart)
+    sender = None
+    try:
+        cls = XModemSender if proto == "xmodem" else YModemSender
+        sender = cls(link, block_size=block_size, max_retries=retries,
+                     resp_timeout=resp_timeout, verbose=verbose, progress=pgr)
+        sender.send(data, name, invite_timeout=invite_timeout)
+        pgr.finish(True, sender.retries, sender.blocks)
+        return sender
+    except Exception as e:
+        # 任何失败都先收尾进度行（串口断开也要避免终端留下半行进度条）
+        pgr.finish(False, sender.retries if sender else 0,
+                   sender.blocks if sender else 0, note=str(e))
+        raise
+    finally:
+        # 恢复终端回显；不清理 uart.buffer —— 传输结束后 SPL 会立刻打印
+        # 'Recv success...'，这些字节必须留给后续 expect()
+        link.close()
 
 
 # ----------------------------------------------------------------------------
@@ -216,6 +552,20 @@ def expect(uart, patterns, timeout, label):
     if pat is None:
         abort(f"等待「{label}」超时({timeout}s)")
     return pat
+
+
+# ----------------------------------------------------------------------------
+# 传输封装：打印阶段标题，失败即 abort
+# ----------------------------------------------------------------------------
+def do_transfer(uart, args, proto, path, what):
+    block_size = args.xmodem_block if proto == "xmodem" else args.ymodem_block
+    print(f"\n======== 发送{what}（内置 {proto.upper()}，{block_size}B/包，"
+          f"{os.path.getsize(path)}B） ========", flush=True)
+    try:
+        transfer(uart, proto, path, block_size=block_size, retries=args.retries,
+                 resp_timeout=args.resp_timeout, verbose=args.verbose)
+    except TransferError as e:
+        abort(f"{what} 传输失败: {e}")
 
 
 # ----------------------------------------------------------------------------
@@ -232,9 +582,8 @@ def do_flow(uart, args):
         # 收到了 banner，继续收集足够多的 C 邀请
         expect(uart, [cpat], 120, "C_invitation")
 
-    # ---------------- S2: sx 上传 SPL ----------------
-    print("======== Send SPL via sx ========", flush=True)
-    uart.ymodem_send(["sx", "-q", "-b", "-X", args.spl_normal], timeout=180)
+    # ---------------- S2: XMODEM 上传 SPL ----------------
+    do_transfer(uart, args, "xmodem", args.spl_normal, "SPL")
     expect(uart, [b"Minimum SPL"], 60, "spl_banner")
 
     # ---------------- S3: 跳过 Recovery 菜单并选择引导模式 ----------------
@@ -250,25 +599,16 @@ def do_flow(uart, args):
         confirm = rb"\(SBI \+ TBT\)"
     expect(uart, [confirm], 30, "boot_mode_confirm")
 
-    # ---------------- S4/S5/S6: 按模式分次 ymodem 传文件 ----------------
+    # ---------------- S4/S5/S6: 按模式分次 YMODEM 传文件 ----------------
     if args.boot_mode == "1":
         # 先 SBI，再等 SPL 自动进入下一轮接收，再 TBT
         expect(uart, [b"Transfer SBI image via YMODEM now"], 60, "ymodem_sbi")
-        print("======== Send SBI via sb ========", flush=True)
-        uart.ymodem_send(["sb", "-q", "-b", "--ymodem", args.sbi_img], timeout=180)
+        do_transfer(uart, args, "ymodem", args.sbi_img, "SBI")
         expect(uart, [b"Done!"], 30, "sbi_done")
 
-        expect(uart, [b"Transfer TBT image via YMODEM now"], 60, "ymodem_tbt")
-        print("======== Send TBT via sb ========", flush=True)
-        uart.ymodem_send(["sb", "-q", "-b", "--ymodem", args.tbt_img], timeout=180)
-        expect(uart, [b"Done!"], 30, "tbt_done")
-    else:
-        # 模式 2：TBT only
-        expect(uart, [b"Transfer TBT image via YMODEM now"], 60, "ymodem_tbt")
-        print("======== Send TBT via sb ========", flush=True)
-        uart.ymodem_send(["sb", "-q", "-b", "--ymodem", args.tbt_img], timeout=180)
-        expect(uart, [b"Done!"], 30, "tbt_done")
-
+    expect(uart, [b"Transfer TBT image via YMODEM now"], 60, "ymodem_tbt")
+    do_transfer(uart, args, "ymodem", args.tbt_img, "TBT")
+    expect(uart, [b"Done!"], 30, "tbt_done")
     # ---------------- S7: 等待引导完成 ----------------
     expect(uart, [b"Booting SBI"], 60, "boot_done")
 
@@ -343,10 +683,10 @@ def interactive_console(uart):
         while True:
             r, _, _ = select.select([sys.stdin, uart.ser], [], [], 0.2)
             if uart.ser in r:
-                data = uart.ser.read(4096)
-                if not data:
+                if data := uart.ser.read(4096):
+                    uart._ingest(data)  # 记日志 + 回显到终端
+                else:
                     break
-                uart._ingest(data)  # 记日志 + 回显到终端
             if sys.stdin in r:
                 data = os.read(fd, 4096)
                 if not data:
@@ -354,8 +694,7 @@ def interactive_console(uart):
                 if b"\x1d" in data:  # Ctrl-]
                     print("\n[console] Ctrl-] pressed, exit", flush=True)
                     break
-                data = data.replace(b"\x1d", b"")
-                if data:
+                if data := data.replace(b"\x1d", b""):
                     uart.ser.write(data)
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
@@ -381,6 +720,16 @@ def main():
                            help="完整日志文件路径")
     argparser.add_argument("--c_threshold", type=int, default=10,
                            help="累计收集 'C' 邀请的阈值")
+    argparser.add_argument("--xmodem_block", type=int, choices=[128, 1024], default=128,
+                           help="XMODEM 数据块大小（BootROM 实测 128B 可用，默认 128）")
+    argparser.add_argument("--ymodem_block", type=int, choices=[128, 1024], default=1024,
+                           help="YMODEM 数据块大小（SPL 支持 1024B，默认 1024）")
+    argparser.add_argument("--retries", type=int, default=10,
+                           help="单帧最大重传次数（默认 10，对齐 U-Boot）")
+    argparser.add_argument("--resp_timeout", type=float, default=2.0,
+                           help="等待接收端 ACK/NAK 的超时秒数（默认 2.0）")
+    argparser.add_argument("--verbose", action="store_true",
+                           help="打印协议细节（邀请模式、重传、块0、非控制字节）")
     argparser.add_argument("--auto_script", default=None,
                            help="引导完成后要执行的自动化 Python 脚本（可选）")
     args = argparser.parse_args()
@@ -399,6 +748,8 @@ def main():
     if args.boot_mode == "1":
         print(f"[tool] SBI img={args.sbi_img} ({os.path.getsize(args.sbi_img)}B)")
     print(f"[tool] TBT img={args.tbt_img} ({os.path.getsize(args.tbt_img)}B)")
+    print(f"[tool] 协议=内置 XMODEM({args.xmodem_block}B)/YMODEM({args.ymodem_block}B)，"
+          f"重传上限={args.retries}")
     print(f"[tool] 完整日志={args.trace}")
     if args.auto_script:
         print(f"[tool] 引导后执行自动化脚本={args.auto_script}")
